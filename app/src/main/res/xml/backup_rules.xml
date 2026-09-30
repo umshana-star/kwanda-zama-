@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="sharedpref" path="zama_security_prefs.xml" />
+    <exclude domain="database" path="zama_salon_ai.db" />
+    <exclude domain="database" path="zama_salon_ai.db-shm" />
+    <exclude domain="database" path="zama_salon_ai.db-wal" />
+</full-backup-content>

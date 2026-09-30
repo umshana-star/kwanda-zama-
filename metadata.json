@@ -1,0 +1,6 @@
+{
+  "name": "Zama AI",
+  "description": "Futuristic digital art experience and AI Employee platform for Zama AI, featuring the 3D Z object, animated typography transformations, and autonomous WhatsApp agent intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
