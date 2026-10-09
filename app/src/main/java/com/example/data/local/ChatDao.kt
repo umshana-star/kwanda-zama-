@@ -63,8 +63,56 @@ interface ChatDao {
     suspend fun getAllMessagesList(): List<ChatMessage>
 
     /**
+     * Searches past chat messages with the WhatsApp agent in Room by keyword across content,
+     * AI reasoning trace, and sender role, ordered chronologically.
+     */
+    @Query(
+        """
+        SELECT * FROM chat_messages 
+        WHERE content LIKE '%' || :query || '%' 
+           OR ai_trace LIKE '%' || :query || '%' 
+           OR sender_role LIKE '%' || :query || '%'
+        ORDER BY timestamp_millis ASC, id ASC
+        """
+    )
+    fun searchChatHistory(query: String): Flow<List<ChatMessage>>
+
+    /**
+     * Alias for searching past chat messages in Room by keyword.
+     */
+    @Query(
+        """
+        SELECT * FROM chat_messages 
+        WHERE content LIKE '%' || :query || '%' 
+           OR ai_trace LIKE '%' || :query || '%' 
+           OR sender_role LIKE '%' || :query || '%'
+        ORDER BY timestamp_millis ASC, id ASC
+        """
+    )
+    fun searchMessages(query: String): Flow<List<ChatMessage>>
+
+    /**
+     * Searches past chat messages in Room filtered by both keyword and sender (user vs WhatsApp agent).
+     */
+    @Query(
+        """
+        SELECT * FROM chat_messages 
+        WHERE is_from_user = :isFromUser 
+          AND (content LIKE '%' || :query || '%' OR ai_trace LIKE '%' || :query || '%')
+        ORDER BY timestamp_millis ASC, id ASC
+        """
+    )
+    fun searchMessagesBySender(query: String, isFromUser: Boolean): Flow<List<ChatMessage>>
+
+    /**
      * Deletes all messages in the chat history.
      */
     @Query("DELETE FROM chat_messages")
     suspend fun clearChatHistory(): Int
+
+    @Query("SELECT COUNT(*) FROM chat_messages")
+    suspend fun getMessageCount(): Int
+
+    @Query("SELECT COUNT(*) FROM chat_messages WHERE message_id = :messageId")
+    suspend fun countByMessageId(messageId: String): Int
 }

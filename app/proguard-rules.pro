@@ -64,6 +64,13 @@
 # Explicitly keep Zama AI Room database, DAOs, Entities, and local repositories
 -keep class com.example.data.local.ZamaDatabase { *; }
 -keep class com.example.data.local.ZamaDatabase$* { *; }
+-keep class com.example.data.local.ConversationDatabase { *; }
+-keep class com.example.data.local.ConversationDatabase$* { *; }
+-keep class com.example.data.local.DateConverter { *; }
+-keep class com.example.data.local.Conversation { *; }
+-keep class com.example.data.local.Message { *; }
+-keep class com.example.data.local.ConversationWithMessages { *; }
+-keep class com.example.data.local.ConversationDao { *; }
 -keep class com.example.data.local.ChatLogEntity { *; }
 -keep class com.example.data.local.ChatMessageEntity { *; }
 -keep class com.example.data.local.BookingEventEntity { *; }
@@ -235,3 +242,11 @@
     kotlinx.serialization.KSerializer serializer(...);
 }
 -dontwarn kotlinx.coroutines.**
+
+# ------------------------------------------------------------------------------
+# 7. Secure Key Management & Server Proxy
+# ------------------------------------------------------------------------------
+-keep class com.example.security.** { *; }
+-keep class com.example.service.whatsapp.** { *; }
+-keep class com.example.data.local.** { *; }
+

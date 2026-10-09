@@ -185,7 +185,7 @@ object CalendarSyncManager {
         messageText: String,
         clientName: String = "Valued Customer",
         clientPhone: String = "+27 82 555 0192"
-    ): BookingEventEntity? = withContext(Dispatchers.IO) {
+    ): BookingEventEntity? = withContext<BookingEventEntity?>(Dispatchers.IO) {
         val parsed = BookingTriageParser.parse(messageText, fallbackClientName = clientName) ?: return@withContext null
         val dao = ZamaDatabase.getDatabase(context).bookingEventDao()
 

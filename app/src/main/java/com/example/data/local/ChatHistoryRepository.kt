@@ -31,10 +31,39 @@ class ChatHistoryRepository(
     }
 
     /**
-     * Searches chat logs by keyword.
+     * Searches chat logs by keyword in Room.
      */
     fun searchChatLogs(query: String): Flow<List<ChatLogEntity>> {
-        return chatLogDao.searchChatLogs(query)
+        val trimmed = query.trim()
+        return if (trimmed.isBlank()) {
+            chatLogDao.getAllChatLogs()
+        } else {
+            chatLogDao.searchChatLogs(trimmed)
+        }
+    }
+
+    /**
+     * Searches chat logs in Room filtered by both keyword and sender role.
+     */
+    fun searchChatLogsBySender(query: String, isFromCustomer: Boolean): Flow<List<ChatLogEntity>> {
+        return chatLogDao.searchChatLogsBySender(query.trim(), isFromCustomer)
+    }
+
+    /**
+     * Queries the Room `chat_messages` table to filter past messages with the WhatsApp agent
+     * by keyword and optional sender role (`isFromUser`).
+     */
+    fun searchChatMessages(
+        query: String,
+        isFromUser: Boolean? = null
+    ): Flow<List<com.example.data.local.ChatMessage>> {
+        val trimmed = query.trim()
+        return when {
+            trimmed.isBlank() && isFromUser == null -> chatLogDao.getAllChatMessages()
+            trimmed.isBlank() && isFromUser != null -> chatLogDao.getMessagesBySender(isFromUser)
+            isFromUser != null -> chatLogDao.searchChatMessagesBySender(trimmed, isFromUser)
+            else -> chatLogDao.searchChatMessages(trimmed)
+        }
     }
 
     /**
@@ -104,5 +133,51 @@ class ChatHistoryRepository(
      */
     suspend fun addLogs(logs: List<ChatLogEntity>) = withContext(Dispatchers.IO) {
         chatLogDao.insertChatLogs(logs)
+    }
+
+    /**
+     * Exports all stored chat history from Room (`chat_logs` and `chat_messages`) into a
+     * formatted JSON backup string.
+     */
+    suspend fun exportChatHistoryToJsonString(filterQuery: String = ""): String = withContext(Dispatchers.IO) {
+        val trimmed = filterQuery.trim()
+        val logs = chatLogDao.getAllChatLogsSync().let { list ->
+            if (trimmed.isBlank()) list else list.filter { it.text.contains(trimmed, ignoreCase = true) }
+        }
+        val messages = chatLogDao.getAllChatMessagesSync().let { list ->
+            if (trimmed.isBlank()) list else list.filter { it.content.contains(trimmed, ignoreCase = true) }
+        }
+        com.example.export.ChatExportManager.generateJsonBackup(
+            messages = logs.map { it.toChatMessage() },
+            scope = if (trimmed.isBlank()) com.example.export.ExportScope.FULL_CHAT else com.example.export.ExportScope.FILTERED_VIEW,
+            filterQuery = filterQuery,
+            roomChatLogs = logs,
+            roomChatMessages = messages
+        )
+    }
+
+    /**
+     * Exports all stored chat history from Room (`chat_logs` and `chat_messages`) to a
+     * shareable `.json` file in `context.cacheDir/exports/`.
+     */
+    suspend fun exportChatHistoryToJsonFile(
+        context: android.content.Context,
+        filterQuery: String = ""
+    ): java.io.File = withContext(Dispatchers.IO) {
+        val trimmed = filterQuery.trim()
+        val logs = chatLogDao.getAllChatLogsSync().let { list ->
+            if (trimmed.isBlank()) list else list.filter { it.text.contains(trimmed, ignoreCase = true) }
+        }
+        val messages = chatLogDao.getAllChatMessagesSync().let { list ->
+            if (trimmed.isBlank()) list else list.filter { it.content.contains(trimmed, ignoreCase = true) }
+        }
+        com.example.export.ChatExportManager.createJsonFile(
+            context = context,
+            messages = logs.map { it.toChatMessage() },
+            scope = if (trimmed.isBlank()) com.example.export.ExportScope.FULL_CHAT else com.example.export.ExportScope.FILTERED_VIEW,
+            filterQuery = filterQuery,
+            roomChatLogs = logs,
+            roomChatMessages = messages
+        )
     }
 }

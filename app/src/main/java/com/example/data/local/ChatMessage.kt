@@ -1,14 +1,15 @@
 package com.example.data.local
 
+import androidx.annotation.Keep
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
- * Room Database @Entity representing a chat message for Zama AI chat history.
- * Stores message content, sender information (user vs AI), and timestamp.
+ * Model representing a chat message stored in Room and displayed in the UI.
  */
+@Keep
 @Entity(
     tableName = "chat_messages",
     indices = [
@@ -22,7 +23,7 @@ data class ChatMessage(
     val id: Long = 0,
 
     @ColumnInfo(name = "message_id")
-    val messageId: String = System.currentTimeMillis().toString(),
+    val messageId: String = java.util.UUID.randomUUID().toString(),
 
     @ColumnInfo(name = "content")
     val content: String,
@@ -49,53 +50,10 @@ data class ChatMessage(
     val audioModelUsed: String? = null,
 
     @ColumnInfo(name = "ai_trace")
-    val aiTrace: String? = null
+    val aiTrace: String? = null,
+
+    @ColumnInfo(name = "intent_tag")
+    val intentTag: String? = null
 ) {
-    /**
-     * Convenience property returning true if sent by the user/customer.
-     */
-    val isUser: Boolean
-        get() = isFromUser
-
-    /**
-     * Convenience property returning true if sent by the autonomous Zama AI agent.
-     */
-    val isAi: Boolean
-        get() = !isFromUser
-
-    /**
-     * Returns sender classification as "USER" or "AI".
-     */
-    val senderType: String
-        get() = if (isFromUser) "USER" else "AI"
-
-    /**
-     * Convert Room entity to UI domain model.
-     */
-    fun toUiModel(): com.example.model.ChatMessage = com.example.model.ChatMessage(
-        id = messageId,
-        isFromCustomer = isFromUser,
-        text = content,
-        timestamp = timestamp,
-        statusTicks = statusTicks,
-        isVoiceNote = isVoiceNote,
-        audioModelUsed = audioModelUsed
-    )
-
-    companion object {
-        fun fromUiModel(
-            uiModel: com.example.model.ChatMessage,
-            aiTrace: String? = null
-        ): ChatMessage = ChatMessage(
-            messageId = uiModel.id,
-            content = uiModel.text,
-            isFromUser = uiModel.isFromCustomer,
-            senderRole = if (uiModel.isFromCustomer) "USER" else "AI",
-            timestamp = uiModel.timestamp,
-            statusTicks = uiModel.statusTicks,
-            isVoiceNote = uiModel.isVoiceNote,
-            audioModelUsed = uiModel.audioModelUsed,
-            aiTrace = aiTrace
-        )
-    }
+    fun toUiModel(): ChatMessage = this
 }

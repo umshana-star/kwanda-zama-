@@ -1,360 +1,201 @@
 package com.example.security
 
+import android.app.Activity
+import android.app.KeyguardManager
 import android.content.Context
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
-import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
-import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
-import androidx.biometric.BiometricPrompt
-import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import android.content.pm.PackageManager
+import android.hardware.biometrics.BiometricManager
+import android.hardware.biometrics.BiometricPrompt
+import android.os.Build
+import android.os.CancellationSignal
+import android.os.Handler
+import android.os.Looper
+import androidx.annotation.RequiresApi
+import java.util.concurrent.Executor
 
 /**
- * Represents the reactive authentication flow states (Idle, Authenticating, Success, Error)
- * emitted by [BiometricAuthManager] and rendered by `BiometricPromptStatusView`.
+ * Hardware capability status for biometric authentication on the current device.
  */
-sealed class BiometricAuthFlowState {
-    data class Idle(
-        val message: String = "Biometric sensor ready. Tap to authenticate."
-    ) : BiometricAuthFlowState() {
-        companion object : BiometricAuthFlowState()
-    }
-
-    data class Authenticating(
-        val message: String = "Waiting for user biometric verification..."
-    ) : BiometricAuthFlowState() {
-        companion object : BiometricAuthFlowState()
-    }
-
-    data class Success(
-        val message: String = "Biometric identity verified."
-    ) : BiometricAuthFlowState() {
-        companion object : BiometricAuthFlowState()
-    }
-
-    data class Error(
-        val message: String = "Biometric authentication failed. Please try again or use Owner PIN.",
-        val errorCode: Int = -1
-    ) : BiometricAuthFlowState() {
-        companion object : BiometricAuthFlowState()
-    }
-}
-
-typealias BiometricAuthState = BiometricAuthFlowState
-
-/**
- * Hardware capability status for biometric authentication on the device.
- */
-sealed class BiometricCapability {
-    data class Available(
-        val canUseBiometric: Boolean,
-        val canUseDeviceCredential: Boolean,
-        val sensorTypes: List<String>
-    ) : BiometricCapability()
-
-    object NoneEnrolled : BiometricCapability()
-    object HardwareUnavailable : BiometricCapability()
-    object NotSupported : BiometricCapability()
+enum class BiometricCapabilityStatus {
+    AVAILABLE,
+    NOT_ENROLLED,
+    HARDWARE_UNAVAILABLE,
+    NO_HARDWARE,
+    UNSUPPORTED_SDK
 }
 
 /**
- * Result of a biometric authentication attempt.
+ * Callback interface to receive authentication lifecycle events.
  */
-sealed class BiometricAuthResult {
-    data class Success(val message: String = "Biometric authentication successful") : BiometricAuthResult()
-    object Failed : BiometricAuthResult()
-    data class Error(val errorCode: Int, val message: String) : BiometricAuthResult()
-    object Cancelled : BiometricAuthResult()
+interface BiometricAuthCallback {
+    fun onAuthenticationStarted() {}
+    fun onAuthenticationSuccess(resultDescription: String = "Biometric identity verified") {}
+    fun onAuthenticationError(errorCode: Int, errString: CharSequence) {}
+    fun onAuthenticationFailed() {}
 }
 
 /**
- * Manager class handling hardware readiness checks and [BiometricPrompt] execution
- * via `androidx.biometric` to authenticate the user and trigger success/error callbacks
- * for the application's secure entry flow.
+ * Manager responsible for checking biometric hardware capabilities and invoking
+ * the native Android [BiometricPrompt] for secure app access.
  */
-class BiometricAuthManager(
-    private val appContext: Context? = null
-) {
+class BiometricAuthManager(private val context: Context) {
 
-    private val boundActivity: FragmentActivity? = appContext as? FragmentActivity
-
-    private val _authFlowState = MutableStateFlow<BiometricAuthFlowState>(BiometricAuthFlowState.Idle())
+    private var currentCancellationSignal: CancellationSignal? = null
 
     /**
-     * Reactive stream of the current biometric authentication flow state
-     * ([BiometricAuthFlowState.Idle], [BiometricAuthFlowState.Authenticating],
-     * [BiometricAuthFlowState.Success], [BiometricAuthFlowState.Error]).
+     * Inspects device hardware and security settings to determine biometric availability.
      */
-    val authFlowState: StateFlow<BiometricAuthFlowState> = _authFlowState.asStateFlow()
+    fun canAuthenticate(): BiometricCapabilityStatus {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            return BiometricCapabilityStatus.UNSUPPORTED_SDK
+        }
 
-    /**
-     * Updates the current [authFlowState] directly.
-     */
-    fun setFlowState(state: BiometricAuthFlowState) {
-        _authFlowState.value = state
+        // On Android 10+ (API 29+), use BiometricManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val biometricManager = context.getSystemService(BiometricManager::class.java)
+            if (biometricManager != null) {
+                return when (biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.BIOMETRIC_STRONG)) {
+                    BiometricManager.BIOMETRIC_SUCCESS -> BiometricCapabilityStatus.AVAILABLE
+                    BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> BiometricCapabilityStatus.NOT_ENROLLED
+                    BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> BiometricCapabilityStatus.NO_HARDWARE
+                    BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> BiometricCapabilityStatus.HARDWARE_UNAVAILABLE
+                    else -> BiometricCapabilityStatus.HARDWARE_UNAVAILABLE
+                }
+            }
+        }
+
+        // On Android 9 (API 28), check PackageManager and Keyguard
+        val packageManager = context.packageManager
+        val hasFingerprintHardware = packageManager.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT)
+        if (!hasFingerprintHardware) {
+            return BiometricCapabilityStatus.NO_HARDWARE
+        }
+
+        val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        return if (keyguardManager?.isKeyguardSecure == true) {
+            BiometricCapabilityStatus.AVAILABLE
+        } else {
+            BiometricCapabilityStatus.NOT_ENROLLED
+        }
     }
 
     /**
-     * Resets the current [authFlowState] back to [BiometricAuthFlowState.Idle].
-     */
-    fun resetFlowState(message: String = "Biometric sensor ready. Tap to authenticate.") {
-        _authFlowState.value = BiometricAuthFlowState.Idle(message)
-    }
-
-    /**
-     * Checks whether biometric hardware or device credentials are available using the bound [appContext]
-     * or a supplied [context].
-     */
-    fun checkBiometricCapability(context: Context? = appContext): BiometricCapability {
-        val targetContext = context ?: appContext ?: return BiometricCapability.NotSupported
-        return Companion.checkBiometricCapability(targetContext)
-    }
-
-    /**
-     * Returns true if `androidx.biometric.BiometricManager` reports that authentication is ready.
-     */
-    fun canAuthenticate(context: Context? = appContext): Boolean {
-        return checkBiometricCapability(context) is BiometricCapability.Available
-    }
-
-    /**
-     * Launches `androidx.biometric.BiometricPrompt` and invokes dedicated success, error,
-     * failed, and cancellation callbacks for the application's secure entry flow.
+     * Launches the system Android [BiometricPrompt] on the provided [Activity].
      */
     fun authenticate(
-        activity: FragmentActivity,
-        title: String = DEFAULT_TITLE,
-        subtitle: String = DEFAULT_SUBTITLE,
-        description: String = DEFAULT_DESCRIPTION,
-        negativeButtonText: String = DEFAULT_NEGATIVE_BUTTON,
-        onSuccess: (BiometricPrompt.AuthenticationResult?) -> Unit = {},
-        onError: (errorCode: Int, errString: String) -> Unit = { _, _ -> },
-        onFailed: () -> Unit = {},
-        onCancelled: () -> Unit = {
-            onError(BiometricPrompt.ERROR_USER_CANCELED, "Authentication cancelled")
+        activity: Activity,
+        title: String = "Biometric Verification",
+        subtitle: String = "Unlock Zama Salon Concierge",
+        description: String = "Scan your fingerprint or face to access encrypted records",
+        negativeButtonText: String = "Use PIN Fallback",
+        callback: BiometricAuthCallback
+    ): CancellationSignal? {
+        cancelAuthentication()
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            callback.onAuthenticationError(
+                -1,
+                "BiometricPrompt requires Android 9.0 (API 28) or higher"
+            )
+            return null
         }
-    ) {
-        _authFlowState.value = BiometricAuthFlowState.Authenticating()
-        val executor = ContextCompat.getMainExecutor(activity)
-        val callback = createAuthenticationCallback(
-            onSuccess = onSuccess,
-            onError = onError,
-            onFailed = onFailed,
-            onCancelled = onCancelled
-        )
+
+        callback.onAuthenticationStarted()
+
+        val cancellationSignal = CancellationSignal().also {
+            currentCancellationSignal = it
+        }
+
+        val executor: Executor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            activity.mainExecutor
+        } else {
+            val handler = Handler(Looper.getMainLooper())
+            Executor { command -> handler.post(command) }
+        }
 
         try {
-            val promptInfo = buildPromptInfo(
-                context = activity,
-                title = title,
-                subtitle = subtitle,
-                description = description,
-                negativeButtonText = negativeButtonText
-            )
-            val biometricPrompt = BiometricPrompt(activity, executor, callback)
-            biometricPrompt.authenticate(promptInfo)
-        } catch (e: Exception) {
-            val errMsg = e.localizedMessage ?: "Failed to initialize biometric prompt"
-            _authFlowState.value = BiometricAuthFlowState.Error(errorCode = -1, message = errMsg)
-            onError(-1, errMsg)
-        }
-    }
-
-    /**
-     * Convenience overload that launches `androidx.biometric.BiometricPrompt` on the [boundActivity]
-     * supplied at construction time.
-     */
-    fun authenticate(
-        title: String = DEFAULT_TITLE,
-        subtitle: String = DEFAULT_SUBTITLE,
-        description: String = DEFAULT_DESCRIPTION,
-        negativeButtonText: String = DEFAULT_NEGATIVE_BUTTON,
-        onSuccess: (BiometricPrompt.AuthenticationResult?) -> Unit = {},
-        onError: (errorCode: Int, errString: String) -> Unit = { _, _ -> },
-        onFailed: () -> Unit = {},
-        onCancelled: () -> Unit = {
-            onError(BiometricPrompt.ERROR_USER_CANCELED, "Authentication cancelled")
-        }
-    ) {
-        val activity = boundActivity
-        if (activity == null) {
-            val msg = "FragmentActivity is required to display BiometricPrompt"
-            _authFlowState.value = BiometricAuthFlowState.Error(errorCode = -1, message = msg)
-            onError(-1, msg)
-            return
-        }
-        authenticate(
-            activity = activity,
-            title = title,
-            subtitle = subtitle,
-            description = description,
-            negativeButtonText = negativeButtonText,
-            onSuccess = onSuccess,
-            onError = onError,
-            onFailed = onFailed,
-            onCancelled = onCancelled
-        )
-    }
-
-    /**
-     * Triggers the native Android [BiometricPrompt] dialog and emits a unified [BiometricAuthResult].
-     */
-    fun showBiometricPrompt(
-        activity: FragmentActivity,
-        title: String = DEFAULT_TITLE,
-        subtitle: String = DEFAULT_SUBTITLE,
-        description: String = DEFAULT_DESCRIPTION,
-        onResult: (BiometricAuthResult) -> Unit = {}
-    ) {
-        authenticate(
-            activity = activity,
-            title = title,
-            subtitle = subtitle,
-            description = description,
-            onSuccess = {
-                onResult(BiometricAuthResult.Success("Authenticated successfully"))
-            },
-            onError = { errorCode, errString ->
-                onResult(BiometricAuthResult.Error(errorCode, errString))
-            },
-            onFailed = {
-                onResult(BiometricAuthResult.Failed)
-            },
-            onCancelled = {
-                onResult(BiometricAuthResult.Cancelled)
-            }
-        )
-    }
-
-    /**
-     * Creates a [BiometricPrompt.AuthenticationCallback] routing `androidx.biometric` events
-     * to the provided success/error/failed/cancelled lambdas and updating [authFlowState].
-     */
-    fun createAuthenticationCallback(
-        onSuccess: (BiometricPrompt.AuthenticationResult?) -> Unit,
-        onError: (errorCode: Int, errString: String) -> Unit,
-        onFailed: () -> Unit = {},
-        onCancelled: () -> Unit = {
-            onError(BiometricPrompt.ERROR_USER_CANCELED, "Authentication cancelled")
-        }
-    ): BiometricPrompt.AuthenticationCallback {
-        return object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                super.onAuthenticationSucceeded(result)
-                _authFlowState.value = BiometricAuthFlowState.Success("Biometric identity verified.")
-                onSuccess(result)
-            }
-
-            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                super.onAuthenticationError(errorCode, errString)
-                val message = errString.toString()
-                if (
-                    errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
-                    errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
-                    errorCode == BiometricPrompt.ERROR_CANCELED
-                ) {
-                    _authFlowState.value = BiometricAuthFlowState.Idle("Authentication paused. Tap to resume.")
-                    onCancelled()
-                } else {
-                    _authFlowState.value = BiometricAuthFlowState.Error(errorCode = errorCode, message = message)
-                    onError(errorCode, message)
-                }
-            }
-
-            override fun onAuthenticationFailed() {
-                super.onAuthenticationFailed()
-                _authFlowState.value = BiometricAuthFlowState.Error(
-                    errorCode = -2,
-                    message = "Biometric not recognized. Please try again or use Owner PIN."
-                )
-                onFailed()
-            }
-        }
-    }
-
-    /**
-     * Builds a [BiometricPrompt.PromptInfo] configured with strong/weak biometrics
-     * and device credential or Owner PIN fallback.
-     */
-    fun buildPromptInfo(
-        context: Context,
-        title: String = DEFAULT_TITLE,
-        subtitle: String = DEFAULT_SUBTITLE,
-        description: String = DEFAULT_DESCRIPTION,
-        negativeButtonText: String = DEFAULT_NEGATIVE_BUTTON
-    ): BiometricPrompt.PromptInfo {
-        val promptInfoBuilder = BiometricPrompt.PromptInfo.Builder()
-            .setTitle(title)
-            .setSubtitle(subtitle)
-            .setDescription(description)
-
-        val biometricManager = BiometricManager.from(context)
-        val canDeviceCredential = runCatching {
-            biometricManager.canAuthenticate(BIOMETRIC_STRONG or BIOMETRIC_WEAK or DEVICE_CREDENTIAL) ==
-                BiometricManager.BIOMETRIC_SUCCESS
-        }.getOrDefault(false)
-
-        if (canDeviceCredential) {
-            promptInfoBuilder.setAllowedAuthenticators(BIOMETRIC_STRONG or BIOMETRIC_WEAK or DEVICE_CREDENTIAL)
-        } else {
-            promptInfoBuilder.setAllowedAuthenticators(BIOMETRIC_STRONG or BIOMETRIC_WEAK)
-            promptInfoBuilder.setNegativeButtonText(negativeButtonText)
-        }
-
-        return promptInfoBuilder.build()
-    }
-
-    companion object {
-        const val DEFAULT_TITLE = "Unlock Zama Business Hub"
-        const val DEFAULT_SUBTITLE = "Kwanda Zama Salon Owner Authentication"
-        const val DEFAULT_DESCRIPTION =
-            "Verify your fingerprint, face unlock, or device credential to access private customer triage logs and WhatsApp threads."
-        const val DEFAULT_NEGATIVE_BUTTON = "Use Owner PIN"
-
-        /**
-         * Checks whether biometric hardware and device credentials are available on [context].
-         */
-        fun checkBiometricCapability(context: Context): BiometricCapability {
-            return try {
-                val biometricManager = BiometricManager.from(context)
-                val authenticators = BIOMETRIC_STRONG or BIOMETRIC_WEAK or DEVICE_CREDENTIAL
-                when (biometricManager.canAuthenticate(authenticators)) {
-                    BiometricManager.BIOMETRIC_SUCCESS -> BiometricCapability.Available(
-                        canUseBiometric = true,
-                        canUseDeviceCredential = true,
-                        sensorTypes = listOf("Fingerprint", "Face Unlock")
+            val prompt = BiometricPrompt.Builder(activity)
+                .setTitle(title)
+                .setSubtitle(subtitle)
+                .setDescription(description)
+                .setNegativeButton(negativeButtonText, executor) { _, _ ->
+                    callback.onAuthenticationError(
+                        BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED,
+                        "PIN fallback selected"
                     )
-                    BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> BiometricCapability.NoneEnrolled
-                    BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> BiometricCapability.HardwareUnavailable
-                    BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> BiometricCapability.NotSupported
-                    BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED -> BiometricCapability.HardwareUnavailable
-                    else -> BiometricCapability.NotSupported
                 }
-            } catch (_: Throwable) {
-                BiometricCapability.NotSupported
+                .build()
+
+            val authenticationCallback = object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
+                    super.onAuthenticationSucceeded(result)
+                    currentCancellationSignal = null
+                    callback.onAuthenticationSuccess("Biometric identity verified successfully")
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
+                    super.onAuthenticationError(errorCode, errString)
+                    currentCancellationSignal = null
+                    callback.onAuthenticationError(
+                        errorCode,
+                        errString ?: "Biometric authentication encountered an error"
+                    )
+                }
+
+                override fun onAuthenticationFailed() {
+                    super.onAuthenticationFailed()
+                    callback.onAuthenticationFailed()
+                }
+            }
+
+            prompt.authenticate(cancellationSignal, executor, authenticationCallback)
+            return cancellationSignal
+        } catch (e: Exception) {
+            currentCancellationSignal = null
+            callback.onAuthenticationError(-2, e.localizedMessage ?: "Failed to initialize BiometricPrompt")
+            return null
+        }
+    }
+
+    /**
+     * Cancels any active BiometricPrompt session.
+     */
+    fun cancelAuthentication() {
+        currentCancellationSignal?.let {
+            if (!it.isCanceled) {
+                it.cancel()
             }
         }
+        currentCancellationSignal = null
+    }
 
-        /**
-         * Static helper to display [BiometricPrompt] and return a [BiometricAuthResult].
-         */
-        fun showBiometricPrompt(
-            activity: FragmentActivity,
-            title: String = DEFAULT_TITLE,
-            subtitle: String = DEFAULT_SUBTITLE,
-            description: String = DEFAULT_DESCRIPTION,
-            onResult: (BiometricAuthResult) -> Unit
-        ) {
-            BiometricAuthManager(activity).showBiometricPrompt(
-                activity = activity,
-                title = title,
-                subtitle = subtitle,
-                description = description,
-                onResult = onResult
-            )
-        }
+    /**
+     * Simulator method for unit tests or emulators lacking physical biometric hardware.
+     */
+    fun simulateSuccess(callback: BiometricAuthCallback) {
+        callback.onAuthenticationStarted()
+        Handler(Looper.getMainLooper()).postDelayed({
+            callback.onAuthenticationSuccess("Simulated sensor touch confirmed")
+        }, 300L)
+    }
+
+    /**
+     * Simulator method for simulating failed sensor match.
+     */
+    fun simulateFailure(callback: BiometricAuthCallback) {
+        callback.onAuthenticationStarted()
+        Handler(Looper.getMainLooper()).postDelayed({
+            callback.onAuthenticationFailed()
+        }, 300L)
+    }
+
+    /**
+     * Simulator method for simulating user cancellation or error.
+     */
+    fun simulateError(errorCode: Int = 10, message: String = "Biometric sensor timeout", callback: BiometricAuthCallback) {
+        callback.onAuthenticationStarted()
+        Handler(Looper.getMainLooper()).postDelayed({
+            callback.onAuthenticationError(errorCode, message)
+        }, 300L)
     }
 }

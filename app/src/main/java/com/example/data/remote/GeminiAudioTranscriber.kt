@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
 sealed class VoiceTranscriptionResult {
     data class Success(
         val transcribedText: String,
-        val modelUsed: String = "gemini-3.5-flash"
+        val modelUsed: String = "gemini-2.5-flash"
     ) : VoiceTranscriptionResult()
 
     data class Error(
@@ -36,7 +36,7 @@ sealed class VoiceTriageResult {
     data class Success(
         val transcribedText: String,
         val triageAnalysis: TriageAnalysis,
-        val modelUsed: String = "gemini-3.5-flash"
+        val modelUsed: String = "gemini-2.5-flash"
     ) : VoiceTriageResult()
 
     data class Error(
@@ -47,7 +47,7 @@ sealed class VoiceTriageResult {
 }
 
 /**
- * Service that communicates with the Google Gemini API (model: gemini-3.5-flash)
+ * Service that communicates with the Google Gemini API (model: gemini-2.5-flash)
  * to transcribe recorded microphone audio (MPEG-4/AAC) into text for autonomous chat.
  */
 class GeminiAudioTranscriber(
@@ -62,7 +62,7 @@ class GeminiAudioTranscriber(
 
     companion object {
         private const val TAG = "GeminiAudioTranscriber"
-        const val MODEL_NAME = "gemini-3.5-flash"
+        const val MODEL_NAME = "gemini-2.5-flash"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
     }
 

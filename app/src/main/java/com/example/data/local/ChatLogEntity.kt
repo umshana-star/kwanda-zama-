@@ -59,7 +59,7 @@ data class ChatLogEntity(
      */
     fun toChatMessage(): ChatMessage {
         val isVoice = actionDetail?.startsWith("VOICE_INPUT") == true
-        val model = if (isVoice) actionDetail?.substringAfter("VOICE_INPUT:", "gemini-3.5-flash") else null
+        val model = if (isVoice) actionDetail?.substringAfter("VOICE_INPUT:", "gemini-2.5-flash") else null
         return ChatMessage(
             id = messageId,
             isFromCustomer = isFromCustomer,
@@ -81,7 +81,7 @@ data class ChatLogEntity(
             timestampMillis: Long = System.currentTimeMillis()
         ): ChatLogEntity {
             val finalActionDetail = if (chatMessage.isVoiceNote) {
-                "VOICE_INPUT:${chatMessage.audioModelUsed ?: "gemini-3.5-flash"}"
+                "VOICE_INPUT:${chatMessage.audioModelUsed ?: "gemini-2.5-flash"}"
             } else {
                 chatMessage.actionDetail
             }

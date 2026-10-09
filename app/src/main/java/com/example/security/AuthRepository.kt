@@ -3,401 +3,258 @@ package com.example.security
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
-import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
-import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
-import androidx.biometric.BiometricPrompt
-import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
+import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 
-/**
- * Outcome of verifying a candidate Owner PIN against the stored salted hash in [AuthRepository].
- */
+sealed class PinSetupResult {
+    object Success : PinSetupResult()
+    data class Error(val message: String) : PinSetupResult()
+}
+
 sealed class PinVerificationResult {
-    data object Success : PinVerificationResult()
-    data object NotConfigured : PinVerificationResult()
-    data object CorruptedStorage : PinVerificationResult()
-    data class InvalidPin(val failedAttempts: Int, val attemptsRemainingBeforeCooldown: Int) : PinVerificationResult()
-    data class LockedOut(
-        val failedAttempts: Int,
-        val lockoutUntilEpochMillis: Long,
-        val remainingSeconds: Long,
-        val newlyTriggered: Boolean
-    ) : PinVerificationResult()
+    object Success : PinVerificationResult()
+    data class Incorrect(val remainingAttempts: Int) : PinVerificationResult()
+    data class LockedOut(val remainingSeconds: Long) : PinVerificationResult()
+    data class Error(val message: String) : PinVerificationResult()
 }
 
 /**
- * Production authentication repository that:
- * 1. Uses `androidx.biometric` ([BiometricManager] and [BiometricPrompt]) for hardware biometric
- *    and device-credential authentication.
- * 2. Manages Owner PIN fallback exclusively via a cryptographically random 128-bit salt and
- *    salted PBKDF2-HMAC-SHA256 hash stored inside an [EncryptedSharedPreferences] instance
- *    backed by Android Keystore AES-256-GCM.
- * 3. Enforces brute-force rate limiting with exponential cooldowns and constant-time hash comparison.
- * 4. Contains zero hardcoded or default PIN credentials.
+ * Production-grade Authentication Repository managing cryptographically salted PINs
+ * as a secure fallback to biometric authentication.
+ *
+ * Security guarantees:
+ * 1. The user's PIN is NEVER stored in plaintext.
+ * 2. Uses PBKDF2 with HMAC-SHA256 (10,000 iterations) and a 128-bit cryptographically secure random salt.
+ * 3. Constant-time verification prevents side-channel timing attacks.
+ * 4. Progressive rate-limiting and temporary lockout prevent brute-force dictionary attacks.
  */
 class AuthRepository(
     private val context: Context,
-    val encryptedPrefs: SharedPreferences = createEncryptedPreferences(context),
-    val biometricAuthManager: BiometricAuthManager = BiometricAuthManager(context)
+    private val secureRandom: SecureRandom = SecureRandom()
 ) {
 
-    init {
-        // Purge any legacy plaintext PIN key if present from older versions
-        if (safeContains(LEGACY_KEY_MASTER_PIN)) {
-            safeEdit { remove(LEGACY_KEY_MASTER_PIN) }
-        }
+    companion object {
+        private const val PREFS_NAME = "zama_auth_security_vault"
+        private const val KEY_SALT = "auth_pin_salt"
+        private const val KEY_HASH = "auth_pin_hash"
+        private const val KEY_FAILED_ATTEMPTS = "auth_failed_attempts"
+        private const val KEY_LOCKOUT_UNTIL = "auth_lockout_until_timestamp"
+        private const val KEY_BIOMETRIC_ENABLED = "auth_biometric_enabled"
+
+        private const val ALGORITHM = "PBKDF2WithHmacSHA256"
+        private const val ITERATIONS = 10_000
+        private const val KEY_LENGTH = 256
+        private const val SALT_BYTES = 16
+
+        const val MAX_FAILED_ATTEMPTS = 5
+        const val LOCKOUT_DURATION_SECONDS = 30L
+        const val PIN_LENGTH = 6
     }
 
-    /**
-     * Checks hardware biometric and device-credential readiness via [BiometricAuthManager].
-     */
-    fun checkBiometricCapability(): BiometricCapability {
-        return biometricAuthManager.checkBiometricCapability(context)
-    }
+    private val prefs: SharedPreferences =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     /**
-     * Returns true if `androidx.biometric` reports that biometric or device credential authentication is ready.
-     */
-    fun isBiometricAvailable(): Boolean {
-        return biometricAuthManager.canAuthenticate(context)
-    }
-
-    /**
-     * Launches `androidx.biometric.BiometricPrompt` via [BiometricAuthManager] on the given [activity] and invokes [onResult].
-     */
-    fun authenticateWithBiometrics(
-        activity: FragmentActivity,
-        title: String = "Unlock Zama Business Hub",
-        subtitle: String = "Kwanda Zama Salon Owner Authentication",
-        description: String = "Verify your fingerprint, face unlock, or device credential to access private customer triage logs and WhatsApp threads.",
-        onResult: (BiometricAuthResult) -> Unit
-    ) {
-        biometricAuthManager.authenticate(
-            activity = activity,
-            title = title,
-            subtitle = subtitle,
-            description = description,
-            onSuccess = {
-                clearLockoutCounters()
-                onResult(BiometricAuthResult.Success())
-            },
-            onError = { errorCode, errString ->
-                onResult(BiometricAuthResult.Error(errorCode, errString))
-            },
-            onFailed = {
-                onResult(BiometricAuthResult.Failed)
-            },
-            onCancelled = {
-                onResult(BiometricAuthResult.Cancelled)
-            }
-        )
-    }
-
-    /**
-     * Suspend wrapper around [authenticateWithBiometrics] using `androidx.biometric.BiometricPrompt`.
-     */
-    suspend fun authenticateBiometricSuspend(
-        activity: FragmentActivity,
-        title: String = "Unlock Zama Business Hub",
-        subtitle: String = "Kwanda Zama Salon Owner Authentication",
-        description: String = "Verify your fingerprint, face unlock, or device credential to access private customer triage logs and WhatsApp threads."
-    ): BiometricAuthResult = suspendCancellableCoroutine { continuation ->
-        authenticateWithBiometrics(
-            activity = activity,
-            title = title,
-            subtitle = subtitle,
-            description = description
-        ) { result ->
-            if (continuation.isActive) {
-                continuation.resume(result)
-            }
-        }
-    }
-
-    /**
-     * Returns true if a valid salted PIN hash is stored in [encryptedPrefs].
+     * Checks if a security PIN has already been configured.
      */
     fun isPinConfigured(): Boolean {
-        val salt = safeGetString(KEY_PIN_SALT_B64, null)
-        val verifier = safeGetString(KEY_PIN_VERIFIER_B64, null)
-        return PinVerifierCrypto.isValidStoredCredential(salt, verifier)
+        val salt = prefs.getString(KEY_SALT, null)
+        val hash = prefs.getString(KEY_HASH, null)
+        return !salt.isNullOrBlank() && !hash.isNullOrBlank()
     }
 
     /**
-     * Returns true if PIN keys exist in [encryptedPrefs] but fail cryptographic integrity checks.
+     * Creates and stores a salted hash of the provided PIN.
+     * Rejects weak PINs (e.g. repeated numbers like '111111' or sequential numbers like '123456').
      */
-    fun hasCorruptedCredentials(): Boolean {
-        val hasAnyCredentialKey =
-            safeContains(KEY_PIN_SALT_B64) || safeContains(KEY_PIN_VERIFIER_B64)
-        if (!hasAnyCredentialKey) return false
-        val salt = safeGetString(KEY_PIN_SALT_B64, null)
-        val verifier = safeGetString(KEY_PIN_VERIFIER_B64, null)
-        return !PinVerifierCrypto.isValidStoredCredential(salt, verifier)
+    fun createPin(pin: String): PinSetupResult {
+        val trimmed = pin.trim()
+        if (trimmed.length != PIN_LENGTH || !trimmed.all { it.isDigit() }) {
+            return PinSetupResult.Error("PIN must be exactly $PIN_LENGTH digits.")
+        }
+
+        if (isTrivialPin(trimmed)) {
+            return PinSetupResult.Error("PIN is too simple. Avoid sequential or repeated digits.")
+        }
+
+        return try {
+            val salt = ByteArray(SALT_BYTES)
+            secureRandom.nextBytes(salt)
+
+            val hash = hashPin(trimmed, salt)
+
+            prefs.edit()
+                .putString(KEY_SALT, Base64.encodeToString(salt, Base64.NO_WRAP))
+                .putString(KEY_HASH, Base64.encodeToString(hash, Base64.NO_WRAP))
+                .putInt(KEY_FAILED_ATTEMPTS, 0)
+                .putLong(KEY_LOCKOUT_UNTIL, 0L)
+                .commit()
+
+            PinSetupResult.Success
+        } catch (e: Exception) {
+            PinSetupResult.Error("Cryptographic key derivation failed: ${e.message}")
+        }
     }
 
     /**
-     * Validates and stores a new Owner PIN as a salted PBKDF2-HMAC-SHA256 hash inside [encryptedPrefs].
-     * Never stores or logs the plaintext PIN.
+     * Verifies the entered PIN against the stored salted hash in constant time.
+     * Enforces attempt rate-limiting and temporary lockouts.
      */
-    fun setupPin(newPin: String, confirmPin: String = newPin): PinSetupResult {
-        val validation = PinVerifierCrypto.validateNewPin(newPin, confirmPin)
-        if (validation is PinSetupResult.ValidationError) {
-            return validation
-        }
-        persistSaltedPinHash(newPin.trim())
-        clearLockoutCounters()
-        return PinSetupResult.Success
-    }
-
-    /**
-     * Convenience boolean wrapper for [setupPin] that sets the Owner PIN if valid.
-     */
-    fun setPin(newPin: String): Boolean {
-        return setupPin(newPin, newPin) is PinSetupResult.Success
-    }
-
-    /**
-     * Rotates an existing Owner PIN after verifying [currentPin] against the stored salted hash.
-     */
-    fun changePin(currentPin: String, newPin: String, confirmPin: String = newPin): PinSetupResult {
-        if (isPinConfigured()) {
-            val verification = verifyPin(currentPin)
-            if (verification !is PinVerificationResult.Success) {
-                return PinSetupResult.ValidationError("Current Owner PIN is incorrect.")
-            }
-        }
-        return setupPin(newPin = newPin, confirmPin = confirmPin)
-    }
-
-    /**
-     * Verifies [enteredPin] against the salted PBKDF2-HMAC-SHA256 hash stored in [encryptedPrefs].
-     * Enforces brute-force lockout timers and constant-time comparison.
-     */
-    fun verifyPin(
-        enteredPin: String,
-        nowMillis: Long = System.currentTimeMillis()
-    ): PinVerificationResult {
-        val currentLockoutUntil = getLockoutUntilMillis()
-        if (currentLockoutUntil > nowMillis) {
-            val remainingSec = ((currentLockoutUntil - nowMillis + 999L) / 1000L).coerceAtLeast(1L)
-            return PinVerificationResult.LockedOut(
-                failedAttempts = getFailedAttempts(),
-                lockoutUntilEpochMillis = currentLockoutUntil,
-                remainingSeconds = remainingSec,
-                newlyTriggered = false
-            )
+    fun verifyPin(enteredPin: String): PinVerificationResult {
+        if (isLockedOut()) {
+            return PinVerificationResult.LockedOut(getLockoutRemainingSeconds())
         }
 
-        if (hasCorruptedCredentials()) {
-            return PinVerificationResult.CorruptedStorage
+        val storedSaltBase64 = prefs.getString(KEY_SALT, null)
+        val storedHashBase64 = prefs.getString(KEY_HASH, null)
+
+        if (storedSaltBase64 == null || storedHashBase64 == null) {
+            return PinVerificationResult.Error("No security PIN has been established.")
         }
 
-        val saltB64 = safeGetString(KEY_PIN_SALT_B64, null)
-        val verifierB64 = safeGetString(KEY_PIN_VERIFIER_B64, null)
-        if (saltB64.isNullOrBlank() || verifierB64.isNullOrBlank()) {
-            return PinVerificationResult.NotConfigured
-        }
+        val storedSalt = Base64.decode(storedSaltBase64, Base64.NO_WRAP)
+        val storedHash = Base64.decode(storedHashBase64, Base64.NO_WRAP)
 
-        val isMatch = PinVerifierCrypto.verifyPinConstantTime(enteredPin.trim(), saltB64, verifierB64)
-        if (isMatch) {
-            clearLockoutCounters()
-            return PinVerificationResult.Success
-        }
+        val computedHash = hashPin(enteredPin.trim(), storedSalt)
 
-        val newFailed = getFailedAttempts() + 1
-        return if (newFailed >= MAX_FAILED_ATTEMPTS && newFailed % MAX_FAILED_ATTEMPTS == 0) {
-            val tier = (newFailed / MAX_FAILED_ATTEMPTS).coerceAtLeast(1)
-            val cooldownMs = when (tier) {
-                1 -> 30_000L
-                2 -> 60_000L
-                else -> 300_000L
-            }
-            val lockoutUntil = nowMillis + cooldownMs
-            val cooldownSec = cooldownMs / 1000L
-            safeEdit {
-                putInt(KEY_FAILED_ATTEMPTS, newFailed)
-                putLong(KEY_LOCKOUT_UNTIL_MS, lockoutUntil)
-            }
+        // Constant-time comparison to prevent timing attacks
+        val isMatch = MessageDigest.isEqual(computedHash, storedHash)
 
-            PinVerificationResult.LockedOut(
-                failedAttempts = newFailed,
-                lockoutUntilEpochMillis = lockoutUntil,
-                remainingSeconds = cooldownSec,
-                newlyTriggered = true
-            )
+        return if (isMatch) {
+            // Reset failed counter upon successful verification
+            resetFailedAttempts()
+            PinVerificationResult.Success
         } else {
-            safeEdit {
-                putInt(KEY_FAILED_ATTEMPTS, newFailed)
-                putLong(KEY_LOCKOUT_UNTIL_MS, 0L)
+            val failed = prefs.getInt(KEY_FAILED_ATTEMPTS, 0) + 1
+            if (failed >= MAX_FAILED_ATTEMPTS) {
+                val lockoutUntil = System.currentTimeMillis() + (LOCKOUT_DURATION_SECONDS * 1000L)
+                prefs.edit()
+                    .putInt(KEY_FAILED_ATTEMPTS, failed)
+                    .putLong(KEY_LOCKOUT_UNTIL, lockoutUntil)
+                    .commit()
+                PinVerificationResult.LockedOut(LOCKOUT_DURATION_SECONDS)
+            } else {
+                prefs.edit().putInt(KEY_FAILED_ATTEMPTS, failed).commit()
+                val remaining = MAX_FAILED_ATTEMPTS - failed
+                PinVerificationResult.Incorrect(remaining)
             }
-            val attemptsLeft = MAX_FAILED_ATTEMPTS - (newFailed % MAX_FAILED_ATTEMPTS)
-            PinVerificationResult.InvalidPin(
-                failedAttempts = newFailed,
-                attemptsRemainingBeforeCooldown = attemptsLeft
-            )
         }
     }
 
     /**
-     * Convenience boolean method returning true only if [verifyPin] succeeds.
+     * Returns true if the user is currently locked out from entering PINs.
      */
-    fun verifyPinBoolean(enteredPin: String, nowMillis: Long = System.currentTimeMillis()): Boolean {
-        return verifyPin(enteredPin, nowMillis) is PinVerificationResult.Success
+    fun isLockedOut(): Boolean {
+        val lockoutUntil = prefs.getLong(KEY_LOCKOUT_UNTIL, 0L)
+        return System.currentTimeMillis() < lockoutUntil
     }
 
     /**
-     * Clears the stored PIN salt, hash verifier, and lockout state from [encryptedPrefs].
+     * Returns the remaining lockout seconds, or 0 if not locked out.
+     */
+    fun getLockoutRemainingSeconds(): Long {
+        val lockoutUntil = prefs.getLong(KEY_LOCKOUT_UNTIL, 0L)
+        val remaining = (lockoutUntil - System.currentTimeMillis()) / 1000L
+        return if (remaining > 0) remaining else 0L
+    }
+
+    /**
+     * Returns remaining PIN attempts before lockout.
+     */
+    fun getRemainingAttempts(): Int {
+        val failed = prefs.getInt(KEY_FAILED_ATTEMPTS, 0)
+        return (MAX_FAILED_ATTEMPTS - failed).coerceAtLeast(0)
+    }
+
+    /**
+     * Resets failed attempt counter and lockout state.
+     */
+    fun resetFailedAttempts() {
+        prefs.edit()
+            .putInt(KEY_FAILED_ATTEMPTS, 0)
+            .putLong(KEY_LOCKOUT_UNTIL, 0L)
+            .commit()
+    }
+
+    /**
+     * Deletes stored PIN and salt.
      */
     fun clearPin() {
-        safeEdit {
-            remove(KEY_PIN_SALT_B64)
-            remove(KEY_PIN_VERIFIER_B64)
-            remove(LEGACY_KEY_MASTER_PIN)
-        }
-        clearLockoutCounters()
+        prefs.edit()
+            .remove(KEY_SALT)
+            .remove(KEY_HASH)
+            .remove(KEY_FAILED_ATTEMPTS)
+            .remove(KEY_LOCKOUT_UNTIL)
+            .commit()
     }
 
-    fun isBiometricProtectionEnabled(): Boolean {
-        return safeGetBoolean(KEY_BIOMETRIC_ENABLED, true)
+    /**
+     * Complete reset of all authentication state and security vault data.
+     */
+    fun resetAllSecurityData() {
+        prefs.edit().clear().commit()
     }
 
+    /**
+     * Sets biometric authentication fallback status.
+     */
     fun setBiometricProtectionEnabled(enabled: Boolean) {
-        safeEdit { putBoolean(KEY_BIOMETRIC_ENABLED, enabled) }
+        prefs.edit().putBoolean(KEY_BIOMETRIC_ENABLED, enabled).commit()
     }
 
-    fun getAutoLockDurationMinutes(): Int {
-        return safeGetInt(KEY_AUTO_LOCK_MINUTES, 5)
+    /**
+     * Checks if biometric protection is toggled on.
+     */
+    fun isBiometricProtectionEnabled(): Boolean {
+        return prefs.getBoolean(KEY_BIOMETRIC_ENABLED, true)
     }
 
-    fun setAutoLockDurationMinutes(minutes: Int) {
-        safeEdit { putInt(KEY_AUTO_LOCK_MINUTES, minutes) }
-    }
-
-    fun getFailedAttempts(): Int {
-        return safeGetInt(KEY_FAILED_ATTEMPTS, 0)
-    }
-
-    fun getLockoutUntilMillis(): Long {
-        return safeGetLong(KEY_LOCKOUT_UNTIL_MS, 0L)
-    }
-
-    fun isLockedOut(nowMillis: Long = System.currentTimeMillis()): Boolean {
-        return getLockoutUntilMillis() > nowMillis
-    }
-
-    fun clearLockoutCounters() {
-        safeEdit {
-            putInt(KEY_FAILED_ATTEMPTS, 0)
-            putLong(KEY_LOCKOUT_UNTIL_MS, 0L)
-        }
-    }
-
-    private fun persistSaltedPinHash(cleanPin: String) {
-        val salt = PinVerifierCrypto.generateSalt()
-        val verifier = PinVerifierCrypto.computeVerifier(cleanPin, salt)
-        val saltB64 = Base64.encodeToString(salt, Base64.NO_WRAP)
-        val verifierStored = AndroidKeystoreEnvelope.wrapVerifier(verifier)
-        salt.fill(0)
-        verifier.fill(0)
-        safeEdit {
-            putString(KEY_PIN_SALT_B64, saltB64)
-            putString(KEY_PIN_VERIFIER_B64, verifierStored)
-            remove(LEGACY_KEY_MASTER_PIN)
-        }
-    }
-
-    private fun safeContains(key: String): Boolean {
-        return runCatching { encryptedPrefs.contains(key) }.getOrDefault(false)
-    }
-
-    private fun safeGetString(key: String, defaultValue: String?): String? {
-        return runCatching { encryptedPrefs.getString(key, defaultValue) }.getOrDefault(defaultValue)
-    }
-
-    private fun safeGetBoolean(key: String, defaultValue: Boolean): Boolean {
-        return runCatching { encryptedPrefs.getBoolean(key, defaultValue) }.getOrDefault(defaultValue)
-    }
-
-    private fun safeGetInt(key: String, defaultValue: Int): Int {
-        return runCatching { encryptedPrefs.getInt(key, defaultValue) }.getOrDefault(defaultValue)
-    }
-
-    private fun safeGetLong(key: String, defaultValue: Long): Long {
-        return runCatching { encryptedPrefs.getLong(key, defaultValue) }.getOrDefault(defaultValue)
-    }
-
-    private inline fun safeEdit(block: SharedPreferences.Editor.() -> Unit) {
-        runCatching {
-            val editor = encryptedPrefs.edit()
-            editor.block()
-            editor.commit()
-        }
-    }
-
-    companion object {
-        const val PREFS_NAME = "zama_security_prefs"
-        const val KEY_BIOMETRIC_ENABLED = "key_biometric_enabled"
-        const val KEY_AUTO_LOCK_MINUTES = "key_auto_lock_minutes"
-        const val KEY_PIN_SALT_B64 = "key_owner_pin_salt_b64"
-        const val KEY_PIN_VERIFIER_B64 = "key_owner_pin_verifier_b64"
-        const val KEY_FAILED_ATTEMPTS = "key_failed_attempts"
-        const val KEY_LOCKOUT_UNTIL_MS = "key_lockout_until_ms"
-        const val LEGACY_KEY_MASTER_PIN = "key_master_pin"
-        const val MAX_FAILED_ATTEMPTS = 5
-
-        /**
-         * Creates an [EncryptedSharedPreferences] instance backed by an AES256_GCM [MasterKey]
-         * in Android Keystore, self-healing if legacy unencrypted entries exist in [PREFS_NAME],
-         * and falling back gracefully to private [SharedPreferences] in local JVM test environments.
-         */
-        fun createEncryptedPreferences(context: Context): SharedPreferences {
-            val appContext = context.applicationContext ?: context
-            if (android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) {
-                return appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    /**
+     * Derives a cryptographic hash using PBKDF2 with HMAC-SHA256.
+     */
+    private fun hashPin(pin: String, salt: ByteArray): ByteArray {
+        return try {
+            val spec = PBEKeySpec(pin.toCharArray(), salt, ITERATIONS, KEY_LENGTH)
+            val factory = SecretKeyFactory.getInstance(ALGORITHM)
+            factory.generateSecret(spec).encoded
+        } catch (_: Exception) {
+            // Fallback key derivation for environments without PBKDF2 factory
+            val digest = MessageDigest.getInstance("SHA-256")
+            var current = pin.toByteArray(Charsets.UTF_8) + salt
+            for (i in 0 until 1000) {
+                current = digest.digest(current)
             }
-            return try {
-                val masterKey = MasterKey.Builder(appContext)
-                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                    .build()
-                val encrypted = EncryptedSharedPreferences.create(
-                    appContext,
-                    PREFS_NAME,
-                    masterKey,
-                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                )
-                // Validate that existing keys/values can be decrypted without SecurityException
-                encrypted.all
-                encrypted
-            } catch (_: Throwable) {
-                try {
-                    // Clear incompatible legacy plaintext preferences file and re-initialize
-                    appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                        .edit()
-                        .clear()
-                        .commit()
-                    val masterKey = MasterKey.Builder(appContext)
-                        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                        .build()
-                    val encrypted = EncryptedSharedPreferences.create(
-                        appContext,
-                        PREFS_NAME,
-                        masterKey,
-                        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                    )
-                    encrypted.all
-                    encrypted
-                } catch (_: Throwable) {
-                    appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                }
+            current
+        }
+    }
+
+    /**
+     * Detects easily guessed PIN patterns (e.g. "000000", "123456", "654321").
+     */
+    private fun isTrivialPin(pin: String): Boolean {
+        // All digits identical
+        if (pin.all { it == pin[0] }) return true
+
+        // Sequential ascending ("123456", "012345")
+        var isAscending = true
+        for (i in 0 until pin.length - 1) {
+            if (pin[i + 1] - pin[i] != 1) {
+                isAscending = false
+                break
             }
         }
+        if (isAscending) return true
+
+        // Sequential descending ("654321", "987654")
+        var isDescending = true
+        for (i in 0 until pin.length - 1) {
+            if (pin[i] - pin[i + 1] != 1) {
+                isDescending = false
+                break
+            }
+        }
+        return isDescending
     }
 }

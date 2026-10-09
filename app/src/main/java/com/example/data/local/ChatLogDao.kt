@@ -22,6 +22,12 @@ interface ChatLogDao {
     fun getAllChatLogs(): Flow<List<ChatLogEntity>>
 
     /**
+     * Retrieves all chat history logs as a one-shot list for Room database JSON backup/export.
+     */
+    @Query("SELECT * FROM chat_logs ORDER BY timestamp_millis ASC, id ASC")
+    suspend fun getAllChatLogsSync(): List<ChatLogEntity>
+
+    /**
      * Observes chat logs filtered by conversation session ID.
      */
     @Query("SELECT * FROM chat_logs WHERE session_id = :sessionId ORDER BY timestamp_millis ASC, id ASC")
@@ -46,10 +52,32 @@ interface ChatLogDao {
     fun getChatLogCount(): Flow<Int>
 
     /**
-     * Searches stored chat history logs by message text keyword.
+     * Searches stored chat history logs by message text keyword, AI trace, or action detail.
      */
-    @Query("SELECT * FROM chat_logs WHERE text LIKE '%' || :query || '%' ORDER BY timestamp_millis DESC")
+    @Query(
+        """
+        SELECT * FROM chat_logs 
+        WHERE text LIKE '%' || :query || '%' 
+           OR ai_trace LIKE '%' || :query || '%' 
+           OR action_detail LIKE '%' || :query || '%'
+           OR sender_role LIKE '%' || :query || '%'
+        ORDER BY timestamp_millis ASC, id ASC
+        """
+    )
     fun searchChatLogs(query: String): Flow<List<ChatLogEntity>>
+
+    /**
+     * Searches stored chat history logs filtered by sender and keyword.
+     */
+    @Query(
+        """
+        SELECT * FROM chat_logs 
+        WHERE is_from_customer = :isFromCustomer 
+          AND (text LIKE '%' || :query || '%' OR ai_trace LIKE '%' || :query || '%' OR action_detail LIKE '%' || :query || '%')
+        ORDER BY timestamp_millis ASC, id ASC
+        """
+    )
+    fun searchChatLogsBySender(query: String, isFromCustomer: Boolean): Flow<List<ChatLogEntity>>
 
     /**
      * Inserts a new chat log entry.
@@ -94,6 +122,9 @@ interface ChatLogDao {
     @Query("SELECT * FROM chat_messages ORDER BY timestamp_millis ASC")
     fun getAllChatMessages(): Flow<List<ChatMessage>>
 
+    @Query("SELECT * FROM chat_messages ORDER BY timestamp_millis ASC, id ASC")
+    suspend fun getAllChatMessagesSync(): List<ChatMessage>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertChatMessage(message: ChatMessage)
 
@@ -102,6 +133,27 @@ interface ChatLogDao {
 
     @Query("SELECT * FROM chat_messages WHERE is_from_user = :isUser ORDER BY timestamp_millis ASC")
     fun getMessagesBySender(isUser: Boolean): Flow<List<ChatMessage>>
+
+    @Query(
+        """
+        SELECT * FROM chat_messages 
+        WHERE content LIKE '%' || :query || '%' 
+           OR ai_trace LIKE '%' || :query || '%' 
+           OR sender_role LIKE '%' || :query || '%'
+        ORDER BY timestamp_millis ASC, id ASC
+        """
+    )
+    fun searchChatMessages(query: String): Flow<List<ChatMessage>>
+
+    @Query(
+        """
+        SELECT * FROM chat_messages 
+        WHERE is_from_user = :isUser 
+          AND (content LIKE '%' || :query || '%' OR ai_trace LIKE '%' || :query || '%' OR sender_role LIKE '%' || :query || '%')
+        ORDER BY timestamp_millis ASC, id ASC
+        """
+    )
+    fun searchChatMessagesBySender(query: String, isUser: Boolean): Flow<List<ChatMessage>>
 
     @Query("DELETE FROM chat_messages")
     suspend fun clearAllChatMessages(): Int

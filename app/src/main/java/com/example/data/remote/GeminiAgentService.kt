@@ -16,7 +16,7 @@ sealed class GeminiResponseResult {
     data class Success(
         val replyText: String,
         val reasoningTrace: String,
-        val modelUsed: String = "gemini-3.5-flash"
+        val modelUsed: String = "gemini-2.5-flash"
     ) : GeminiResponseResult()
 
     data class Error(
@@ -27,7 +27,7 @@ sealed class GeminiResponseResult {
 }
 
 /**
- * Service that integrates directly with Google Gemini REST API (model: gemini-3.5-flash)
+ * Service that integrates directly with Google Gemini REST API (model: gemini-2.5-flash)
  * to power the Zama AI Employee autonomous agent responses.
  * Provides system prompts, salon and enterprise catalog intelligence, and structured reasoning traces.
  */
@@ -43,7 +43,7 @@ class GeminiAgentService(
 
     companion object {
         private const val TAG = "GeminiAgentService"
-        const val MODEL_NAME = "gemini-3.5-flash"
+        const val MODEL_NAME = "gemini-2.5-flash"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
         val SYSTEM_INSTRUCTION = """
@@ -180,7 +180,7 @@ class GeminiAgentService(
         return GeminiResponseResult.Success(
             replyText = reply,
             reasoningTrace = trace,
-            modelUsed = if (isApiKeyIssue) "gemini-3.5-flash (local fallback)" else "gemini-3.5-flash"
+            modelUsed = if (isApiKeyIssue) "gemini-2.5-flash (local fallback)" else "gemini-2.5-flash"
         )
     }
 }

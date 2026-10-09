@@ -1,542 +1,346 @@
 package com.example
 
-import android.app.Application
+import android.Manifest
 import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.tooling.preview.PreviewParameter
-import androidx.compose.ui.tooling.preview.PreviewParameterProvider
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.fragment.app.FragmentActivity
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.security.BiometricSecurityViewModel
-import com.example.ui.components.AiEmployeeLiveLab
-import com.example.ui.components.AgentPerformanceAnalyticsScreen
-import com.example.ui.components.BiometricAuthenticationScreen
-import com.example.ui.components.BiometricLockScreen
-import com.example.ui.components.BiometricPrompt
-import com.example.ui.components.BiometricPromptStatusView
-import com.example.ui.components.BiometricSecurityStatusPill
-import com.example.ui.components.BusinessCalendarDashboardScreen
-import com.example.ui.components.SaltedPinFallbackScreen
-import com.example.ui.components.SecurityAuditDialog
-import com.example.ui.components.SentimentFlowDashboardOverlay
-import com.example.ui.components.ChatAnalyticsDashboardScreen
+import com.example.ui.components.AgentServiceConsoleScreen
 import com.example.ui.components.ChatScreen
-import com.example.ui.components.CrystallineAIObject
-import com.example.ui.components.EncryptedWorldParticles
-import com.example.ui.components.FuturisticTypographyShowcase
-import com.example.ui.components.InteractiveTypographicArt
-import com.example.ui.components.MovingTypographyPlayground
-import com.example.ui.components.ThemeTogglePill
-import com.example.ui.components.WhatsAppAgentManagementScreen
-import com.example.ui.components.WhatsAppAgentStatusView
-import com.example.ui.components.Zama3DZCenterpieceEngine
-import com.example.ui.components.Zama3DVisualizer
-import com.example.ui.components.ZamaAppSettingsDialog
-import com.example.ui.components.ZamaEditorialHero
-import com.example.ui.components.ZamaFloatingNav
-import com.example.ui.components.ZamaFooter
-import com.example.ui.components.ZamaGlMeshVisualizer
-import com.example.ui.components.ZamaTechnologyTimeline
-import com.example.ui.theme.LocalZamaPalette
-import com.example.ui.theme.LocalZamaThemeMode
+import com.example.ui.theme.LocalChatThemePalette
 import com.example.ui.theme.ThemeViewModel
+import com.example.ui.theme.ZamaElectricCyan
+import com.example.ui.theme.ZamaNeonGreen
 import com.example.ui.theme.ZamaTheme
-import com.example.ui.theme.ZamaThemeMode
-import com.example.ui.theme.ZamaVoid
-import kotlinx.coroutines.launch
+import com.example.ui.viewmodel.ChatViewModel
 
-class MainActivity : FragmentActivity() {
-  val biometricAuthManager: com.example.security.BiometricAuthManager by lazy {
-    com.example.security.BiometricAuthManager(this)
-  }
+class MainActivity : ComponentActivity() {
 
-  override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
-    enableEdgeToEdge()
-    setContent {
-      val themeViewModel: ThemeViewModel = viewModel(
-        factory = ThemeViewModel.Companion.Factory(application)
-      )
-      val themeMode by themeViewModel.themeMode.collectAsStateWithLifecycle()
-
-      ZamaTheme(themeMode = themeMode) {
-        Surface(
-          modifier = Modifier.fillMaxSize(),
-          color = MaterialTheme.colorScheme.background
-        ) {
-          ZamaAppScreen(
-            themeMode = themeMode,
-            biometricAuthManager = biometricAuthManager,
-            onToggleTheme = { themeViewModel.toggleTheme() },
-            onSelectThemeMode = { themeViewModel.setThemeMode(it) }
-          )
-        }
-      }
+    private val themeViewModel: ThemeViewModel by viewModels {
+        ThemeViewModel.Companion.Factory(application)
     }
-  }
+
+    private val chatViewModel: ChatViewModel by viewModels {
+        ChatViewModel.provideFactory(application)
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+
+        setContent {
+            val globalThemeMode by themeViewModel.themeMode.collectAsStateWithLifecycle()
+            val chatThemeMode by chatViewModel.chatThemeMode.collectAsStateWithLifecycle()
+
+            ZamaTheme(
+                themeMode = globalThemeMode,
+                chatThemeMode = chatThemeMode
+            ) {
+                MainAppContent(
+                    chatViewModel = chatViewModel,
+                    themeViewModel = themeViewModel
+                )
+            }
+        }
+    }
 }
 
 @Composable
-fun ZamaAppScreen(
-  themeMode: ZamaThemeMode = LocalZamaThemeMode.current,
-  biometricAuthManager: com.example.security.BiometricAuthManager? = null,
-  onToggleTheme: () -> Unit = {},
-  onSelectThemeMode: (ZamaThemeMode) -> Unit = {}
+fun MainAppContent(
+    chatViewModel: ChatViewModel,
+    themeViewModel: ThemeViewModel,
+    modifier: Modifier = Modifier
 ) {
-  val context = LocalContext.current
-  val isInspection = LocalInspectionMode.current
-  val app = context.applicationContext as? Application
+    val context = LocalContext.current
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val palette = LocalChatThemePalette.current
 
-  if (isInspection || app == null) {
-    ZamaAppPreviewContent(
-      themeMode = themeMode,
-      onToggleTheme = onToggleTheme
-    )
-    return
-  }
-
-  val fragmentActivity = context as? FragmentActivity
-  val securityViewModel: BiometricSecurityViewModel = viewModel(
-    factory = BiometricSecurityViewModel.Companion.Factory(app)
-  )
-  val securityState by securityViewModel.uiState.collectAsStateWithLifecycle()
-
-  // Apply FLAG_SECURE only in non-debug builds so the AI Studio Streaming Emulator can stream the preview
-  androidx.compose.runtime.LaunchedEffect(securityState.isBiometricProtectionEnabled, securityState.isUnlocked) {
-    val window = fragmentActivity?.window ?: return@LaunchedEffect
-    if (!BuildConfig.DEBUG && (securityState.isBiometricProtectionEnabled || !securityState.isUnlocked)) {
-      window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
-    } else {
-      window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            Toast.makeText(context, "Microphone enabled for Voice-to-Text", Toast.LENGTH_SHORT).show()
+            chatViewModel.startVoiceDictation()
+        } else {
+            Toast.makeText(context, "Microphone permission required for voice dictation", Toast.LENGTH_LONG).show()
+        }
     }
-  }
 
-  val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-  androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-    val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-      if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-        securityViewModel.refreshHardwareCapability()
-        securityViewModel.checkAutoLockTimeout()
-      }
-    }
-    lifecycleOwner.lifecycle.addObserver(observer)
-    onDispose {
-      lifecycleOwner.lifecycle.removeObserver(observer)
-    }
-  }
-
-  val listState = rememberLazyListState()
-  val coroutineScope = rememberCoroutineScope()
-  var showSentimentFlowOverlay by remember { mutableStateOf(false) }
-  var showSettingsDialog by remember { mutableStateOf(false) }
-  var showSecurityAuditDialog by remember { mutableStateOf(false) }
-
-  Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
-      modifier = Modifier
-        .fillMaxSize()
-        .background(MaterialTheme.colorScheme.background),
-      containerColor = MaterialTheme.colorScheme.background,
-      topBar = {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
+        modifier = modifier
+            .fillMaxSize()
             .statusBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(6.dp)
+            .navigationBarsPadding(),
+        bottomBar = {
+            NavigationBar(
+                containerColor = palette.headerBackground,
+                contentColor = palette.textPrimary,
+                tonalElevation = 8.dp,
+                modifier = Modifier.testTag("main_bottom_nav_bar")
+            ) {
+                NavigationBarItem(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    icon = {
+                        Icon(
+                            imageVector = if (selectedTab == 0) Icons.AutoMirrored.Filled.Chat else Icons.Outlined.ChatBubbleOutline,
+                            contentDescription = "Chat",
+                            modifier = Modifier.size(20.dp)
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = "AGENT CHAT",
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal
+                        )
+                    },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = if (palette.isNeonGlow) ZamaElectricCyan else Color(0xFFF4F4F5),
+                        selectedTextColor = if (palette.isNeonGlow) ZamaElectricCyan else Color(0xFFF4F4F5),
+                        indicatorColor = if (palette.isNeonGlow) Color(0x3300E5FF) else Color(0xFF27272A),
+                        unselectedIconColor = palette.textSecondary,
+                        unselectedTextColor = palette.textSecondary
+                    ),
+                    modifier = Modifier.testTag("tab_agent_chat")
+                )
+
+                NavigationBarItem(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    icon = {
+                        Icon(
+                            imageVector = if (selectedTab == 1) Icons.Filled.Dns else Icons.Outlined.Dns,
+                            contentDescription = "Service",
+                            modifier = Modifier.size(20.dp)
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = "SERVICE HUB",
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal
+                        )
+                    },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = if (palette.isNeonGlow) ZamaNeonGreen else Color(0xFFF4F4F5),
+                        selectedTextColor = if (palette.isNeonGlow) ZamaNeonGreen else Color(0xFFF4F4F5),
+                        indicatorColor = if (palette.isNeonGlow) Color(0x3300E676) else Color(0xFF27272A),
+                        unselectedIconColor = palette.textSecondary,
+                        unselectedTextColor = palette.textSecondary
+                    ),
+                    modifier = Modifier.testTag("tab_service_hub")
+                )
+
+                NavigationBarItem(
+                    selected = selectedTab == 2,
+                    onClick = { selectedTab = 2 },
+                    icon = {
+                        Icon(
+                            imageVector = if (selectedTab == 2) Icons.Filled.Lock else Icons.Outlined.Lock,
+                            contentDescription = "Security Vault",
+                            modifier = Modifier.size(20.dp)
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = "SECURITY",
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Normal
+                        )
+                    },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = if (palette.isNeonGlow) ZamaElectricCyan else Color(0xFFF4F4F5),
+                        selectedTextColor = if (palette.isNeonGlow) ZamaElectricCyan else Color(0xFFF4F4F5),
+                        indicatorColor = if (palette.isNeonGlow) Color(0x3300E5FF) else Color(0xFF27272A),
+                        unselectedIconColor = palette.textSecondary,
+                        unselectedTextColor = palette.textSecondary
+                    ),
+                    modifier = Modifier.testTag("tab_pin_security")
+                )
+            }
+        }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
         ) {
-          ZamaFloatingNav(
-            modifier = Modifier.weight(1f),
-            activeSection = "home",
-            onNavigate = { target ->
-              coroutineScope.launch {
-                when (target) {
-                  "hero" -> listState.animateScrollToItem(0)
-                  "3d" -> listState.animateScrollToItem(1) // Jump straight to 3D Z Visual Centerpiece Engine
-                  "gl" -> listState.animateScrollToItem(3)
-                  "chat" -> listState.animateScrollToItem(4) // Jump straight to Zama AI ChatScreen
-                  "lab" -> listState.animateScrollToItem(5) // Jump to Live Lab
-                  "agents" -> listState.animateScrollToItem(6) // Jump straight to Autonomous WhatsApp Agents
-                  "analytics" -> listState.animateScrollToItem(7) // Jump straight to Chat Analytics Dashboard
-                  "perf" -> listState.animateScrollToItem(8) // Jump straight to Agent Performance Analytics
-                  "cal" -> listState.animateScrollToItem(9) // Jump straight to Business Calendar Dashboard
-                  "flow" -> showSentimentFlowOverlay = true // Open Sentiment Flow Recharts Dashboard Overlay
-                  "lock" -> securityViewModel.lockSession() // Lock session immediately via biometric lock
-                  "settings" -> showSettingsDialog = true // Open Settings Dialog with Theme Controls
-                  else -> listState.animateScrollToItem(0)
+            if (selectedTab != 0) {
+                androidx.activity.compose.BackHandler {
+                    selectedTab = 0
                 }
-              }
             }
-          )
 
-          // 1-Tap Theme Toggle Pill (Sunlight / High-Contrast Light vs Futuristic Dark)
-          ThemeTogglePill(
-            currentMode = themeMode,
-            onToggleTheme = onToggleTheme
-          )
+            when (selectedTab) {
+                0 -> ChatScreen(
+                    chatViewModel = chatViewModel,
+                    onRequestMicrophonePermission = {
+                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                )
+                1 -> AgentServiceConsoleScreen(
+                    chatViewModel = chatViewModel
+                )
+                2 -> {
+                    var authMode by remember { mutableStateOf("BIOMETRIC") } // "BIOMETRIC", "PIN", "PRIVACY_POLICY"
+                    val authRepo = remember { com.example.security.AuthRepository(context) }
+                    val biometricAuthManager = remember { com.example.security.BiometricAuthManager(context) }
 
-          BiometricSecurityStatusPill(
-            isUnlocked = securityState.isUnlocked,
-            onLockClicked = { securityViewModel.lockSession() },
-            onUnlockClicked = {
-              fragmentActivity?.let { securityViewModel.authenticateWithBiometrics(it) }
+                    when (authMode) {
+                        "DATA_SAFETY" -> {
+                            androidx.activity.compose.BackHandler {
+                                authMode = "PRIVACY_POLICY"
+                            }
+                            com.example.ui.components.DataSafetyInfoScreen(
+                                onBack = { authMode = "PRIVACY_POLICY" },
+                                onNavigateToPrivacySettings = { authMode = "PRIVACY_POLICY" }
+                            )
+                        }
+                        "PRIVACY_POLICY" -> {
+                            androidx.activity.compose.BackHandler {
+                                authMode = "BIOMETRIC"
+                            }
+                            com.example.ui.components.PrivacySettingsScreen(
+                                chatViewModel = chatViewModel,
+                                onBack = { authMode = "BIOMETRIC" },
+                                onDataWiped = {
+                                    Toast.makeText(context, "All local data wiped & app reset to clean state!", Toast.LENGTH_LONG).show()
+                                    authMode = "BIOMETRIC"
+                                },
+                                onNavigateToDataSafety = {
+                                    authMode = "DATA_SAFETY"
+                                }
+                            )
+                        }
+                        "BIOMETRIC" -> {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                Box(modifier = Modifier.weight(1f)) {
+                                    com.example.ui.components.BiometricAuthenticationScreen(
+                                        biometricAuthManager = biometricAuthManager,
+                                        onAuthenticationSuccess = {
+                                            Toast.makeText(context, "Biometric Authentication Verified!", Toast.LENGTH_SHORT).show()
+                                        },
+                                        onPinFallbackRequested = {
+                                            authMode = "PIN"
+                                        }
+                                    )
+                                }
+                                TextButton(
+                                    onClick = { authMode = "PRIVACY_POLICY" },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                                        .testTag("nav_to_privacy_screen")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Security,
+                                        contentDescription = null,
+                                        tint = if (palette.isNeonGlow) ZamaElectricCyan else Color(0xFFF4F4F5),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "DATA FOUNDATION & PRIVACY POLICY",
+                                        color = if (palette.isNeonGlow) ZamaElectricCyan else Color(0xFFF4F4F5),
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                        else -> {
+                            androidx.activity.compose.BackHandler {
+                                authMode = "BIOMETRIC"
+                            }
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                Box(modifier = Modifier.weight(1f)) {
+                                    com.example.ui.components.SaltedPinAuthScreen(
+                                        authRepository = authRepo,
+                                        onAuthenticationSuccess = {
+                                            Toast.makeText(context, "PIN Authentication Verified!", Toast.LENGTH_SHORT).show()
+                                        },
+                                        onBiometricFallbackRequested = {
+                                            authMode = "BIOMETRIC"
+                                        }
+                                    )
+                                }
+                                TextButton(
+                                    onClick = { authMode = "PRIVACY_POLICY" },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                                        .testTag("nav_to_privacy_screen_pin")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Security,
+                                        contentDescription = null,
+                                        tint = if (palette.isNeonGlow) ZamaElectricCyan else Color(0xFFF4F4F5),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "DATA FOUNDATION & PRIVACY POLICY",
+                                        color = if (palette.isNeonGlow) ZamaElectricCyan else Color(0xFFF4F4F5),
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
-          )
         }
-      }
-    ) { innerPadding ->
-    LazyColumn(
-      state = listState,
-      modifier = Modifier
-        .fillMaxSize()
-        .padding(innerPadding)
-        .navigationBarsPadding()
-        .testTag("zama_main_scroll_feed"),
-      contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-      verticalArrangement = Arrangement.spacedBy(24.dp)
-    ) {
-      // 1. Editorial Hero Manifesto
-      item {
-        ZamaEditorialHero(
-          onExplore3D = {
-            coroutineScope.launch { listState.animateScrollToItem(1) }
-          },
-          onLaunchChat = {
-            coroutineScope.launch { listState.animateScrollToItem(4) }
-          }
-        )
-      }
-
-      // 2. The 3D Z Object Rendering Engine — Central Visual Centerpiece for Zama AI
-      item {
-        Zama3DZCenterpieceEngine()
-      }
-
-      // 2-B. The 3D Z Sculpture & 6-Phase Transformation Engine
-      item {
-        Zama3DVisualizer()
-      }
-
-      // 2-C. The 3D Z Object in OpenGL ES 2.0 & Hardware Mesh Framework
-      item {
-        ZamaGlMeshVisualizer()
-      }
-
-      // 3. Modern Dark-Themed ChatScreen for Zama AI Autonomous Agent
-      item {
-        ChatScreen()
-      }
-
-      // 3-B. Flagship Autonomous AI Employee WhatsApp Communication Interface & Neural Dashboard
-      item {
-        AiEmployeeLiveLab()
-      }
-
-      // 3-C. Autonomous WhatsApp Agent Management Screen & Active Status Indicators
-      item {
-        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-          WhatsAppAgentStatusView(
-            agentService = com.example.data.remote.WhatsAppAgentNetworkModule.defaultBackendService
-          )
-          WhatsAppAgentManagementScreen()
-        }
-      }
-
-      // 3-D. Chat Activity Frequency & Sentiment Trends Dashboard (D3.js / Recharts + Room DB)
-      item {
-        ChatAnalyticsDashboardScreen()
-      }
-
-      // 3-D. Agent Performance Analytics Dashboard (Recharts: Latency, Resolved vs Pending Triage, Peak Hours)
-      item {
-        AgentPerformanceAnalyticsScreen()
-      }
-
-      // 3-E. Business Calendar & Triage Sync Dashboard (Automated Event Creation from WhatsApp Inquiries)
-      item {
-        BusinessCalendarDashboardScreen()
-      }
-
-      // 4. Section 03 — Crystalline AI Object
-      item {
-        CrystallineAIObject()
-      }
-
-      // 5. Section 04 — Moving Typography Playground (PRIVATE POWERFUL OPEN -> ZAMA)
-      item {
-        MovingTypographyPlayground()
-      }
-
-      // 5-B. Custom Modifier: Glitch & Liquid Typography Lab
-      item {
-        FuturisticTypographyShowcase()
-      }
-
-      // 6. Section 05 — Encrypted World Particle System
-      item {
-        EncryptedWorldParticles()
-      }
-
-      // 7. Section 06 — Interactive Typographic Art (TRUST, PRIVACY, COMPUTE, FREEDOM)
-      item {
-        InteractiveTypographicArt()
-      }
-
-      // 8. Section 07 — ZAMA Technology Vertical Timeline
-      item {
-        ZamaTechnologyTimeline()
-      }
-
-      // 9. Final Footer
-      item {
-        ZamaFooter(
-          onNavigate = { target ->
-            coroutineScope.launch {
-              when (target) {
-                "hero" -> listState.animateScrollToItem(0)
-                "3d" -> listState.animateScrollToItem(1)
-                "chat" -> listState.animateScrollToItem(4)
-                "agents" -> listState.animateScrollToItem(6)
-                else -> listState.animateScrollToItem(0)
-              }
-            }
-          }
-        )
-      }
-
-      item {
-        Spacer(modifier = Modifier.height(32.dp))
-      }
     }
-  }
-
-    // Interactive Recharts Sentiment Flow Dashboard Overlay
-    SentimentFlowDashboardOverlay(
-      isOpen = showSentimentFlowOverlay,
-      onDismiss = { showSentimentFlowOverlay = false }
-    )
-
-    // Global App Settings Dialog (Theme toggle & Biometric Security)
-    ZamaAppSettingsDialog(
-      isOpen = showSettingsDialog,
-      currentThemeMode = themeMode,
-      onSelectThemeMode = onSelectThemeMode,
-      securityState = securityState,
-      onToggleBiometrics = { securityViewModel.setBiometricProtectionEnabled(it) },
-      onUpdateAutoLock = { securityViewModel.setAutoLockDuration(it) },
-      onSetupOwnerPin = { newPin, confirmPin ->
-        securityViewModel.setupOwnerPin(newPin, confirmPin, unlockSessionOnSuccess = true)
-      },
-      onChangeOwnerPin = { currentPin, newPin, confirmPin ->
-        securityViewModel.changeOwnerPin(currentPin, newPin, confirmPin)
-      },
-      onResetOwnerPin = { securityViewModel.resetOwnerPin() },
-      onOpenAuditLogs = { showSecurityAuditDialog = true },
-      onManageAgents = { coroutineScope.launch { listState.animateScrollToItem(6) } },
-      onDismiss = { showSettingsDialog = false }
-    )
-
-    // Biometric Security Audit Logs Dialog (Accessible from Global Settings)
-    if (showSecurityAuditDialog) {
-      SecurityAuditDialog(
-        auditLogs = securityState.auditLogs,
-        onDismiss = { showSecurityAuditDialog = false }
-      )
-    }
-
-    // Biometric Security Lock Screen (Guarding salon dashboard, private customer triage & finances)
-    if (!securityState.isUnlocked) {
-      BiometricLockScreen(
-        securityState = securityState,
-        onAuthenticateBiometrics = { act -> securityViewModel.authenticateWithBiometrics(act) },
-        onAuthenticatePin = { pin -> securityViewModel.authenticateWithMasterPin(pin) },
-        onSetupOwnerPin = { newPin, confirmPin ->
-          securityViewModel.setupOwnerPin(newPin, confirmPin, unlockSessionOnSuccess = true)
-        },
-        onLockSession = { securityViewModel.lockSession() },
-        onToggleBiometricProtection = { enabled -> securityViewModel.setBiometricProtectionEnabled(enabled) },
-        onUpdateAutoLockDuration = { mins -> securityViewModel.setAutoLockDuration(mins) },
-        themeMode = themeMode,
-        onToggleTheme = onToggleTheme,
-        onSelectThemeMode = onSelectThemeMode
-      )
-    }
-  }
 }
-
-@Composable
-private fun ZamaAppPreviewContent(
-  themeMode: ZamaThemeMode = LocalZamaThemeMode.current,
-  onToggleTheme: () -> Unit = {}
-) {
-  Surface(
-    modifier = Modifier.fillMaxSize(),
-    color = MaterialTheme.colorScheme.background
-  ) {
-    Scaffold(
-      modifier = Modifier.fillMaxSize(),
-      containerColor = MaterialTheme.colorScheme.background,
-      topBar = {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-          ZamaFloatingNav(
-            modifier = Modifier.weight(1f),
-            activeSection = "home",
-            onNavigate = {}
-          )
-          ThemeTogglePill(
-            currentMode = themeMode,
-            onToggleTheme = onToggleTheme
-          )
-          BiometricSecurityStatusPill(
-            isUnlocked = true,
-            onLockClicked = {},
-            onUnlockClicked = {}
-          )
-        }
-      }
-    ) { innerPadding ->
-      LazyColumn(
-        modifier = Modifier
-          .fillMaxSize()
-          .padding(innerPadding)
-          .testTag("zama_main_scroll_feed"),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp)
-      ) {
-        item {
-          ZamaEditorialHero(
-            onExplore3D = {},
-            onLaunchChat = {}
-          )
-        }
-        item {
-          Zama3DZCenterpieceEngine()
-        }
-        item {
-          ZamaFooter(onNavigate = {})
-        }
-      }
-    }
-  }
-}
-
-class GreetingPreviewParameterProvider : PreviewParameterProvider<String> {
-  override val values: Sequence<String> = sequenceOf("Android", "Zama AI Studio")
-}
-
-class ZamaThemePreviewParameterProvider : PreviewParameterProvider<ZamaThemeMode> {
-  override val values: Sequence<ZamaThemeMode> = sequenceOf(
-    ZamaThemeMode.FUTURISTIC_DARK,
-    ZamaThemeMode.HIGH_CONTRAST_LIGHT
-  )
-}
-
-/**
- * Reusable preview wrapper that explicitly provides a [MaterialTheme] (via [ZamaTheme])
- * and a [Surface] container to wrap UI components for reliable IDE Compose Previews.
- */
-@Composable
-fun PreviewWrapper(
-  modifier: Modifier = Modifier,
-  darkTheme: Boolean = true,
-  themeMode: ZamaThemeMode = if (darkTheme) ZamaThemeMode.FUTURISTIC_DARK else ZamaThemeMode.HIGH_CONTRAST_LIGHT,
-  content: @Composable () -> Unit
-) {
-  ZamaTheme(themeMode = themeMode) {
-    Surface(
-      modifier = modifier,
-      color = MaterialTheme.colorScheme.background,
-      contentColor = MaterialTheme.colorScheme.onBackground
-    ) {
-      content()
-    }
-  }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-  Text(
-    text = "Hello $name!",
-    modifier = modifier,
-    color = MaterialTheme.colorScheme.onBackground
-  )
-}
-
-@Preview(showBackground = true, name = "Greeting Preview")
-@Composable
-fun GreetingPreview(
-  @PreviewParameter(GreetingPreviewParameterProvider::class) name: String = "Android"
-) {
-  PreviewWrapper {
-    Greeting(name)
-  }
-}
-
-@Preview(showBackground = true, widthDp = 411, heightDp = 891, name = "Zama App Preview")
-@Composable
-fun ZamaAppScreenPreview(
-  @PreviewParameter(ZamaThemePreviewParameterProvider::class) themeMode: ZamaThemeMode = ZamaThemeMode.FUTURISTIC_DARK
-) {
-  PreviewWrapper(
-    modifier = Modifier.fillMaxSize(),
-    themeMode = themeMode
-  ) {
-    ZamaAppScreen(themeMode = themeMode)
-  }
-}
-
-@Preview(showBackground = true, name = "BiometricPrompt Waiting Preview")
-@Composable
-fun BiometricPromptPreview() {
-  PreviewWrapper {
-    BiometricPrompt(
-      isWaitingForAuthentication = true,
-      onUseFallbackPin = {}
-    )
-  }
-}
-

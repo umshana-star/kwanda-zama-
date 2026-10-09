@@ -1,275 +1,338 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.example.data.local.ChatHistoryRepository
+import com.example.audio.VoiceRecordingState
+import com.example.audio.VoiceToTextManager
 import com.example.data.local.ChatMessage
+import com.example.data.local.WhatsAppAgentRepository
+import com.example.data.local.WhatsAppInteractionEntity
 import com.example.data.local.ZamaDatabase
-import com.example.data.remote.GeminiAgentService
-import com.example.data.remote.GeminiResponseResult
-import kotlinx.coroutines.CoroutineScope
+import com.example.export.ChatExportManager
+import com.example.service.whatsapp.WhatsAppAgentService
+import com.example.service.whatsapp.WhatsAppAgentServiceStatus
+import com.example.service.whatsapp.api.SandboxWhatsAppCommunicationApi
+import com.example.service.whatsapp.api.WhatsAppCommunicationApi
+import com.example.service.whatsapp.api.WhatsAppInboundMessage
+import com.example.service.whatsapp.api.WhatsAppMessageType
+import com.example.service.whatsapp.intelligence.AgentDecision
+import com.example.service.whatsapp.intelligence.GeminiAgentIntelligence
+import com.example.service.whatsapp.router.WhatsAppInteractionRouter
+import com.example.ui.theme.ChatThemeMode
+import com.example.ui.theme.ChatThemePalette
+import com.example.ui.theme.toPalette
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.UUID
 
-/**
- * UI State representing the current status of the chat messaging flow.
- */
-sealed class MessagingUiState {
-    object Idle : MessagingUiState()
-    data class Generating(val stage: String = "Zama AI is synthesizing...") : MessagingUiState()
-    data class Success(val lastReply: String) : MessagingUiState()
-    data class Error(val errorMessage: String, val isApiKeyIssue: Boolean = false) : MessagingUiState()
-}
-
-/**
- * Modern ChatViewModel that handles:
- * 1. State management for the messaging flow (active messages, typing indicator, neural trace).
- * 2. Integration with Room Database (persisting customer and AI messages reactively).
- * 3. Communication with the Google Gemini API (gemini-3.5-flash) to power AI agent responses.
- */
-class ChatViewModel @JvmOverloads constructor(
+class ChatViewModel(
     application: Application,
-    private val database: ZamaDatabase = ZamaDatabase.getDatabase(application),
-    private val geminiService: GeminiAgentService = GeminiAgentService(),
-    coroutineScopeOverride: CoroutineScope? = null
+    private val repository: WhatsAppAgentRepository,
+    val agentService: WhatsAppAgentService,
+    val interactionRouter: WhatsAppInteractionRouter,
+    val voiceToTextManager: VoiceToTextManager = VoiceToTextManager(application),
+    val whatsAppBusinessManager: com.example.service.whatsapp.api.WhatsAppBusinessCommunicationManager? = null
 ) : AndroidViewModel(application) {
 
-    private val activeScope: CoroutineScope = coroutineScopeOverride ?: viewModelScope
-    private val chatDao = database.chatLogDao()
-    private val repository = ChatHistoryRepository(chatDao)
+    private val prefs = application.getSharedPreferences("zama_theme_preferences", Context.MODE_PRIVATE)
+    val settingsManager = com.example.model.WhatsAppAgentSettingsManager(application)
 
-    /**
-     * Reactive stream of all chat messages directly from Room database.
-     */
-    val messages: StateFlow<List<ChatMessage>> = chatDao.getAllChatMessages()
-        .stateIn(
-            scope = activeScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
+    // Chat messages stream from Room
+    val chatMessages: StateFlow<List<ChatMessage>> = repository.allChatMessages
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    /**
-     * High-level messaging UI state (Idle, Generating, Success, Error).
-     */
-    private val _uiState = MutableStateFlow<MessagingUiState>(MessagingUiState.Idle)
-    val uiState: StateFlow<MessagingUiState> = _uiState.asStateFlow()
+    // Interaction audit logs stream from Room
+    val interactions: StateFlow<List<WhatsAppInteractionEntity>> = repository.allInteractions
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    /**
-     * Boolean indicator for whether the AI agent is actively thinking or typing.
-     */
-    private val _isAiThinking = MutableStateFlow(false)
-    val isAiThinking: StateFlow<Boolean> = _isAiThinking.asStateFlow()
+    // Metrics
+    val interactionCount: StateFlow<Int> = repository.interactionCount
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    /**
-     * Human-like typing stage description (e.g., Reading message, Checking schedule, Typing reply).
-     */
-    private val _aiTypingStage = MutableStateFlow("Zama AI is typing...")
-    val aiTypingStage: StateFlow<String> = _aiTypingStage.asStateFlow()
+    val escalatedCount: StateFlow<Int> = repository.escalatedCount
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    /**
-     * Current neural reasoning trace generated by Gemini for inspection in UI.
-     */
-    private val _latestAiTrace = MutableStateFlow(
-        "Intent: AutonomousConcierge (Confidence: 99.8%)\n" +
-        "Model: gemini-3.5-flash (Google Gemini API)\n" +
-        "Database: Room SQLite Synced\n" +
-        "Action: Ready to handle real-time bookings and service inquiries."
-    )
-    val latestAiTrace: StateFlow<String> = _latestAiTrace.asStateFlow()
+    // Agent service state
+    val serviceStatus: StateFlow<WhatsAppAgentServiceStatus> = agentService.serviceStatus
+    val isAutoReplyActive: StateFlow<Boolean> = agentService.isAutoReplyActive
+    val isAwayModeActive: StateFlow<Boolean> = agentService.isAwayModeActive
+    val awayMessage: StateFlow<String> = agentService.awayMessage
+    val latestDecision: StateFlow<AgentDecision?> = agentService.latestDecision
 
-    /**
-     * Tracks the current text in the chat input field.
-     */
-    private val _currentInputText = MutableStateFlow("")
-    val currentInputText: StateFlow<String> = _currentInputText.asStateFlow()
+    // Theme state
+    private val _chatThemeMode = MutableStateFlow(loadInitialChatTheme())
+    val chatThemeMode: StateFlow<ChatThemeMode> = _chatThemeMode.asStateFlow()
+
+    private val _chatThemePalette = MutableStateFlow(_chatThemeMode.value.toPalette())
+    val chatThemePalette: StateFlow<ChatThemePalette> = _chatThemePalette.asStateFlow()
+
+    // Voice-to-Text state
+    val voiceRecordingState: StateFlow<VoiceRecordingState> = voiceToTextManager.state
+    val isListening: StateFlow<Boolean> = voiceToTextManager.isListening
+
+    // UI input fields
+    private val _inputMessageText = MutableStateFlow("")
+    val inputMessageText: StateFlow<String> = _inputMessageText.asStateFlow()
+
+    private val _exportResult = MutableStateFlow<String?>(null)
+    val exportResult: StateFlow<String?> = _exportResult.asStateFlow()
 
     init {
-        // Seed initial friendly greeting into Room if the database table is empty
-        activeScope.launch {
-            seedInitialGreetingIfEmpty()
+        // Sync agent service with persistent settings
+        agentService.setAwayMode(settingsManager.isAwayModeActive.value, settingsManager.awayMessage.value)
+        agentService.setAutoReplyActive(settingsManager.isAutoReplyActive.value)
+
+        // Seed introductory message if room is empty
+        viewModelScope.launch {
+            if (!repository.hasMessage("msg_welcome_001") && repository.getMessageCount() == 0) {
+                val seedGreeting = ChatMessage(
+                    messageId = "msg_welcome_001",
+                    content = "Hello! I am Zama AI, your autonomous WhatsApp concierge. I can answer inquiries, verify service pricing, book salon appointments, and interface with communication APIs.",
+                    isFromUser = false,
+                    senderRole = "AI",
+                    timestamp = "09:00",
+                    statusTicks = "✓✓",
+                    aiTrace = "Autonomous WhatsApp Concierge initialized. Ready for incoming webhooks.",
+                    intentTag = "GENERAL_SALON_QUERY"
+                )
+                repository.saveChatMessage(seedGreeting)
+            }
         }
     }
 
-    fun onInputTextChanged(newText: String) {
-        _currentInputText.value = newText
+    private fun loadInitialChatTheme(): ChatThemeMode {
+        val saved = prefs.getString("key_chat_theme_mode", ChatThemeMode.FUTURISTIC_NEON.id)
+        return ChatThemeMode.fromId(saved)
+    }
+
+    fun setChatThemeMode(mode: ChatThemeMode) {
+        prefs.edit().putString("key_chat_theme_mode", mode.id).apply()
+        _chatThemeMode.value = mode
+        _chatThemePalette.value = mode.toPalette()
+    }
+
+    fun toggleChatTheme(): ChatThemeMode {
+        val next = when (_chatThemeMode.value) {
+            ChatThemeMode.FUTURISTIC_NEON -> ChatThemeMode.MINIMALIST_DARK
+            ChatThemeMode.MINIMALIST_DARK -> ChatThemeMode.FUTURISTIC_NEON
+        }
+        setChatThemeMode(next)
+        return next
+    }
+
+    fun onInputTextChanged(text: String) {
+        _inputMessageText.value = text
+    }
+
+    fun toggleAutoReply(active: Boolean? = null) {
+        val next = active ?: !agentService.isAutoReplyActive.value
+        agentService.setAutoReplyActive(next)
+        settingsManager.setAutoReplyActive(next)
+    }
+
+    fun toggleAwayMode(active: Boolean? = null) {
+        val next = active ?: !agentService.isAwayModeActive.value
+        agentService.setAwayMode(next)
+        settingsManager.setAwayModeActive(next)
+    }
+
+    fun setAwayMessage(message: String) {
+        agentService.setAwayMessage(message)
+        settingsManager.setAwayMessage(message)
+    }
+
+    fun resetAwayMessage() {
+        agentService.setAwayMessage(com.example.service.whatsapp.WhatsAppAgentService.DEFAULT_AWAY_MESSAGE)
+        settingsManager.resetAwayMessage()
+    }
+
+    fun simulateAwayMessageTest() {
+        simulateInboundCustomerMessage(
+            messageText = "Hi Zama! Is your team available to take appointments right now?",
+            senderName = "Nosipho Mthembu",
+            senderPhone = "+27 83 456 7890"
+        )
     }
 
     /**
-     * Main entry point to send a message (text or transcribed voice).
-     * 1. Persists user message in Room database.
-     * 2. Sets UI state to Generating.
-     * 3. Communicates with the Gemini API (model: gemini-3.5-flash).
-     * 4. Persists the generated AI agent reply into Room with its reasoning trace.
+     * Sends user message from the interactive chat and routes it through the autonomous agent service.
      */
-    fun sendMessage(
-        userText: String,
-        isVoiceNote: Boolean = false,
-        audioModelUsed: String? = null
-    ): kotlinx.coroutines.Job? {
-        val trimmedText = userText.trim()
-        if (trimmedText.isBlank()) return null
+    fun sendUserMessage(text: String = _inputMessageText.value, isVoice: Boolean = false) {
+        val trimmed = text.trim()
+        if (trimmed.isBlank()) return
 
-        val timeString = formatCurrentTime()
-        val userMessageId = "msg_user_${System.currentTimeMillis()}"
-
-        // Reset input field
-        _currentInputText.value = ""
-
-        return activeScope.launch {
-            // 1. Insert user message into Room
-            val userChatMessage = ChatMessage(
-                messageId = userMessageId,
-                content = trimmedText,
-                isFromUser = true,
-                senderRole = "USER",
-                timestamp = timeString,
-                timestampMillis = System.currentTimeMillis(),
-                statusTicks = "✓✓",
-                isVoiceNote = isVoiceNote,
-                audioModelUsed = audioModelUsed
+        _inputMessageText.value = ""
+        viewModelScope.launch {
+            val inbound = WhatsAppInboundMessage(
+                messageId = "msg_usr_${UUID.randomUUID().toString().take(10)}",
+                fromPhoneNumber = "+27 82 001 9283",
+                senderName = "Client",
+                text = trimmed,
+                messageType = if (isVoice) WhatsAppMessageType.AUDIO_VOICE_NOTE else WhatsAppMessageType.TEXT,
+                rawPayload = "{\"source\": \"client_chat_ui\", \"input\": \"$trimmed\"}"
             )
-            chatDao.insertChatMessage(userChatMessage)
+            agentService.handleInboundInteraction(inbound)
+        }
+    }
 
-            // Also keep legacy repository in sync for analytics dashboard
-            repository.saveMessage(
-                userChatMessage.toUiModel(),
-                sessionId = "default_session"
+    /**
+     * Simulates an inbound customer WhatsApp message coming from external communication APIs.
+     */
+    fun simulateInboundCustomerMessage(
+        messageText: String,
+        senderName: String = "Sarah Jenkins",
+        senderPhone: String = "+27 82 555 0192",
+        isVoice: Boolean = false
+    ) {
+        viewModelScope.launch {
+            interactionRouter.simulateCustomerMessage(
+                messageText = messageText,
+                senderName = senderName,
+                senderPhone = senderPhone,
+                isVoiceNote = isVoice
             )
+        }
+    }
 
-            // 2. Set thinking & UI state
-            _isAiThinking.value = true
-            _aiTypingStage.value = "Reading inquiry..."
-            _uiState.value = MessagingUiState.Generating("Zama AI is reading inquiry...")
-
-            // 3. Prepare multi-turn context from current message history
-            val history = messages.value.takeLast(6).map { Pair(it.content, it.isFromUser) }
-
-            // 4. Request response from Gemini API
-            _aiTypingStage.value = "Checking salon schedule & pricing..."
-            val result = geminiService.generateAgentReply(trimmedText, history)
-            _aiTypingStage.value = "Zama AI is typing..."
-
-            when (result) {
-                is GeminiResponseResult.Success -> {
-                    val aiMessageId = "msg_ai_${System.currentTimeMillis()}"
-                    val aiChatMessage = ChatMessage(
-                        messageId = aiMessageId,
-                        content = result.replyText,
-                        isFromUser = false,
-                        senderRole = "AI",
-                        timestamp = formatCurrentTime(),
-                        timestampMillis = System.currentTimeMillis(),
-                        statusTicks = "✓✓",
-                        aiTrace = result.reasoningTrace
-                    )
-
-                    // 5. Persist AI response in Room
-                    chatDao.insertChatMessage(aiChatMessage)
-                    repository.saveMessage(
-                        aiChatMessage.toUiModel(),
-                        sessionId = "default_session",
-                        aiTrace = result.reasoningTrace
-                    )
-
-                    _latestAiTrace.value = result.reasoningTrace
-                    _isAiThinking.value = false
-                    _uiState.value = MessagingUiState.Success(result.replyText)
-                }
-
-                is GeminiResponseResult.Error -> {
-                    val fallbackText = result.fallbackReply ?: "I encountered an error connecting to our autonomous servers. Please try again."
-                    val aiMessageId = "msg_ai_${System.currentTimeMillis()}"
-                    val aiChatMessage = ChatMessage(
-                        messageId = aiMessageId,
-                        content = fallbackText,
-                        isFromUser = false,
-                        senderRole = "AI",
-                        timestamp = formatCurrentTime(),
-                        timestampMillis = System.currentTimeMillis(),
-                        statusTicks = "✓✓",
-                        aiTrace = "Error: ${result.message}"
-                    )
-                    chatDao.insertChatMessage(aiChatMessage)
-
-                    _latestAiTrace.value = "Error: ${result.message}\nAction: Fallback dispatched."
-                    _isAiThinking.value = false
-                    _uiState.value = MessagingUiState.Error(result.message, result.isApiKeyIssue)
-                }
+    /**
+     * Ingests a raw webhook JSON payload from a WhatsApp communication API.
+     */
+    fun processWebhookPayload(rawJson: String) {
+        viewModelScope.launch {
+            if (whatsAppBusinessManager != null) {
+                whatsAppBusinessManager.processInboundWebhook(rawJson)
+            } else {
+                interactionRouter.routeWebhookJson(rawJson)
             }
         }
     }
 
     /**
-     * Resets all chat messages from Room and restores the initial greeting.
+     * Starts Voice-to-Text dictation using Android SpeechRecognizer.
      */
-    fun clearChatHistory(): kotlinx.coroutines.Job {
-        return activeScope.launch {
-            chatDao.clearAllChatMessages()
+    fun startVoiceDictation(): Result<Unit> {
+        return voiceToTextManager.startDictation(
+            existingText = _inputMessageText.value
+        ) { text, isFinal ->
+            _inputMessageText.value = text
+        }
+    }
+
+    fun stopVoiceDictation() {
+        voiceToTextManager.stopDictation()
+    }
+
+    fun cancelVoiceDictation() {
+        voiceToTextManager.cancelDictation()
+    }
+
+    /**
+     * Exports chat messages and interaction logs to a shareable JSON file.
+     */
+    fun exportChatHistory(context: Context): Pair<File, Intent> {
+        val messages = chatMessages.value
+        val inters = interactions.value
+        val (file, intent) = ChatExportManager.exportToJson(context, messages, inters)
+        _exportResult.value = "Exported ${messages.size} messages and ${inters.size} audit logs to ${file.name}"
+        return Pair(file, intent)
+    }
+
+    fun clearExportResult() {
+        _exportResult.value = null
+    }
+
+    fun clearChat() {
+        viewModelScope.launch {
             repository.clearHistory()
-            seedInitialGreetingIfEmpty()
-            _uiState.value = MessagingUiState.Idle
         }
     }
 
     /**
-     * Seeds initial greeting message if Room is empty.
+     * Synchronous suspension method to purge all local data.
      */
-    private suspend fun seedInitialGreetingIfEmpty() {
-        val currentList = chatDao.getAllChatMessages().first()
-        if (currentList.isEmpty()) {
-            val seedUser = ChatMessage(
-                messageId = "seed_user_01",
-                content = "Hi, how much for braids and do you have Saturday at 2pm?",
-                isFromUser = true,
-                senderRole = "USER",
-                timestamp = "14:02",
-                timestampMillis = System.currentTimeMillis() - 120_000
-            )
-            val seedAi = ChatMessage(
-                messageId = "seed_ai_01",
-                content = "Hi Sarah 👋 Knotless Braids start from R650. We have Saturday at 2:00 PM open with our senior stylist! Shall I confirm this reservation for you?",
-                isFromUser = false,
-                senderRole = "AI",
-                timestamp = "14:02",
-                timestampMillis = System.currentTimeMillis() - 60_000,
-                aiTrace = "Intent: PricingInquiry + BookingRequest (Confidence: 99.4%)\n" +
-                        "Model: gemini-3.5-flash (Google Gemini API)\n" +
-                        "Action: Slot #BK-749 tentative lock on calendar."
-            )
-            chatDao.insertChatMessages(listOf(seedUser, seedAi))
+    suspend fun purgeAllDataSync() {
+        withContext(Dispatchers.IO) {
+            val db = ZamaDatabase.getDatabase(getApplication())
+            db.clearAllTables()
+            try {
+                val convDb = com.example.data.local.ConversationDatabase.getInstance(getApplication())
+                convDb.clearAllTables()
+            } catch (_: Exception) {}
         }
-    }
-
-    private fun formatCurrentTime(): String {
-        val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
-        return sdf.format(Date())
+        repository.clearHistory()
+        val authRepo = com.example.security.AuthRepository(getApplication())
+        authRepo.resetAllSecurityData()
+        val keyStoreManager = com.example.security.EncryptedKeyStoreManager(getApplication())
+        keyStoreManager.clearApiKey()
+        settingsManager.clearAllSettings()
+        agentService.setAwayMode(false, WhatsAppAgentService.DEFAULT_AWAY_MESSAGE)
+        agentService.setAutoReplyActive(true)
+        _inputMessageText.value = ""
+        _exportResult.value = null
     }
 
     /**
-     * ViewModelFactory for ChatViewModel providing Room database and GeminiAgentService dependencies.
+     * Purges all locally stored data: Room SQLite database tables,
+     * security vault PIN/salt records, settings preferences, and in-memory UI state.
      */
-    class Factory(
-        private val application: Application,
-        private val geminiService: GeminiAgentService = GeminiAgentService()
-    ) : ViewModelProvider.Factory {
-        @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            if (modelClass.isAssignableFrom(ChatViewModel::class.java)) {
-                val database = ZamaDatabase.getDatabase(application)
-                return ChatViewModel(application, database, geminiService) as T
+    fun deleteAllLocalDataAndReset(onComplete: () -> Unit = {}) {
+        viewModelScope.launch {
+            purgeAllDataSync()
+            withContext(Dispatchers.Main) {
+                onComplete()
             }
-            throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        voiceToTextManager.destroy()
+    }
+
+    companion object {
+        fun provideFactory(application: Application): ViewModelProvider.Factory {
+            return object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    val db = ZamaDatabase.getDatabase(application)
+                    val repository = WhatsAppAgentRepository(db.whatsAppInteractionDao(), db.chatDao())
+                    val agentLogRepo = com.example.data.local.AutonomousAgentLogRepository(db.autonomousAgentLogDao())
+                    val communicationService = com.example.service.whatsapp.api.WhatsAppBusinessCommunicationService()
+                    val secureKeyProvider = com.example.security.SecureApiKeyProvider(application)
+                    val intelligence = GeminiAgentIntelligence(secureKeyProvider)
+                    val agentService = WhatsAppAgentService(
+                        repository = repository,
+                        communicationApi = communicationService,
+                        intelligence = intelligence,
+                        agentLogRepository = agentLogRepo
+                    )
+                    val router = WhatsAppInteractionRouter(agentService)
+                    val communicationManager = com.example.service.whatsapp.api.WhatsAppBusinessCommunicationManager(
+                        communicationService = communicationService,
+                        agentService = agentService
+                    )
+
+                    return ChatViewModel(
+                        application = application,
+                        repository = repository,
+                        agentService = agentService,
+                        interactionRouter = router,
+                        whatsAppBusinessManager = communicationManager
+                    ) as T
+                }
+            }
         }
     }
 }

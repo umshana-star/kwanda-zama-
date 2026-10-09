@@ -166,7 +166,7 @@ data class WhatsAppWebhookSyncResponse(
 )
 
 /**
- * Moshi DTOs for Gemini REST API (`v1beta/models/gemini-3.5-flash:generateContent`)
+ * Moshi DTOs for Gemini REST API (`v1beta/models/gemini-2.5-flash:generateContent`)
  * used by the autonomous WhatsApp agent backend bridge.
  */
 @JsonClass(generateAdapter = false)

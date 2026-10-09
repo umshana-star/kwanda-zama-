@@ -79,7 +79,7 @@ interface WhatsAppAgentApiService {
     ): WhatsAppAgentMessageResponse
 
     /**
-     * Executes neural inference against the Google Gemini REST API (`gemini-3.5-flash`)
+     * Executes neural inference against the Google Gemini REST API (`gemini-2.5-flash`)
      * using Retrofit and Moshi serialization.
      */
     @POST("v1beta/models/{model}:generateContent")

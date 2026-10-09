@@ -362,7 +362,7 @@ object ChatAnalyticsEngine {
                     timestampFormatted = formattedCust,
                     statusTicks = "✓✓",
                     isActionCard = false,
-                    actionDetail = if (custText.contains("Saturday at 2:00 PM")) "VOICE_INPUT:gemini-3.5-flash" else null
+                    actionDetail = if (custText.contains("Saturday at 2:00 PM")) "VOICE_INPUT:gemini-2.5-flash" else null
                 )
             )
 

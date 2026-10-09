@@ -3,6 +3,6 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/ic_zama_logo"
+        android:drawable="@drawable/ic_zama_app_icon_1791443040274"
         android:gravity="center" />
 </layer-list>

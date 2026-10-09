@@ -5,8 +5,6 @@ import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -22,118 +20,123 @@ class AuthRepositoryTest {
     private lateinit var authRepository: AuthRepository
 
     @Before
-    fun setUp() {
+    fun setup() {
         context = ApplicationProvider.getApplicationContext()
-        context.getSharedPreferences(AuthRepository.PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .clear()
-            .commit()
         authRepository = AuthRepository(context)
+        authRepository.clearPin()
     }
 
     @Test
-    fun `initial state has no hardcoded PIN and purges legacy plaintext PIN key`() {
-        val rawPrefs = context.getSharedPreferences(AuthRepository.PREFS_NAME, Context.MODE_PRIVATE)
-        rawPrefs.edit().putString(AuthRepository.LEGACY_KEY_MASTER_PIN, "legacy_plaintext").commit()
-
-        val repo = AuthRepository(context, rawPrefs)
-        assertNull(repo.encryptedPrefs.getString(AuthRepository.LEGACY_KEY_MASTER_PIN, null))
-        assertFalse(repo.isPinConfigured())
-        assertEquals(PinVerificationResult.NotConfigured, repo.verifyPin("7391"))
+    fun testIsPinConfigured_initiallyFalse() {
+        assertFalse(authRepository.isPinConfigured())
     }
 
     @Test
-    fun `setupPin stores salted hash in encryptedPrefs and never stores plaintext PIN`() {
-        val pin = "7391"
-        val setupResult = authRepository.setupPin(pin, pin)
-        assertTrue(setupResult is PinSetupResult.Success)
+    fun testCreatePin_successWithValidPin() {
+        val pin = "849201"
+        val result = authRepository.createPin(pin)
+
+        assertTrue(result is PinSetupResult.Success)
         assertTrue(authRepository.isPinConfigured())
 
-        val saltB64 = authRepository.encryptedPrefs.getString(AuthRepository.KEY_PIN_SALT_B64, null)
-        val verifierB64 = authRepository.encryptedPrefs.getString(AuthRepository.KEY_PIN_VERIFIER_B64, null)
-        assertNotNull(saltB64)
-        assertNotNull(verifierB64)
-
-        // Ensure plaintext PIN never appears in any stored preference value
-        val allStoredValues = authRepository.encryptedPrefs.all.values.map { it.toString() }
-        assertFalse(allStoredValues.any { it.contains(pin) })
-
-        // Setting the same PIN again must generate a new random cryptographic salt and distinct verifier
-        authRepository.setupPin(pin, pin)
-        val secondSaltB64 = authRepository.encryptedPrefs.getString(AuthRepository.KEY_PIN_SALT_B64, null)
-        val secondVerifierB64 = authRepository.encryptedPrefs.getString(AuthRepository.KEY_PIN_VERIFIER_B64, null)
-        assertNotEquals(saltB64, secondSaltB64)
-        assertNotEquals(verifierB64, secondVerifierB64)
+        // Ensure PIN is NOT stored in plaintext anywhere in SharedPreferences
+        val prefs = context.getSharedPreferences("zama_auth_security_vault", Context.MODE_PRIVATE)
+        val allValues = prefs.all.values.joinToString(";")
+        assertFalse("Plaintext PIN must never be stored in SharedPreferences", allValues.contains(pin))
+        assertTrue(prefs.contains("auth_pin_salt"))
+        assertTrue(prefs.contains("auth_pin_hash"))
     }
 
     @Test
-    fun `verifyPin succeeds for valid PIN and enforces exponential lockout after 5 failures`() {
-        assertTrue(authRepository.setPin("6482"))
-        val baseTime = 1_700_000_000_000L
+    fun testCreatePin_rejectsWeakOrInvalidPins() {
+        // Too short
+        val shortResult = authRepository.createPin("1234")
+        assertTrue(shortResult is PinSetupResult.Error)
 
-        // 4 wrong attempts return InvalidPin with decreasing remaining attempts
+        // All identical digits
+        val repeatedResult = authRepository.createPin("777777")
+        assertTrue(repeatedResult is PinSetupResult.Error)
+
+        // Sequential ascending
+        val sequentialResult = authRepository.createPin("123456")
+        assertTrue(sequentialResult is PinSetupResult.Error)
+
+        // Sequential descending
+        val descendingResult = authRepository.createPin("654321")
+        assertTrue(descendingResult is PinSetupResult.Error)
+
+        assertFalse(authRepository.isPinConfigured())
+    }
+
+    @Test
+    fun testVerifyPin_correctPinReturnsSuccess() {
+        val pin = "593817"
+        authRepository.createPin(pin)
+
+        val verifyResult = authRepository.verifyPin(pin)
+        assertTrue(verifyResult is PinVerificationResult.Success)
+        assertEquals(AuthRepository.MAX_FAILED_ATTEMPTS, authRepository.getRemainingAttempts())
+        assertFalse(authRepository.isLockedOut())
+    }
+
+    @Test
+    fun testVerifyPin_incorrectPinDecrementsAttempts() {
+        val pin = "593817"
+        authRepository.createPin(pin)
+
+        val verifyResult = authRepository.verifyPin("999999")
+        assertTrue(verifyResult is PinVerificationResult.Incorrect)
+        assertEquals(AuthRepository.MAX_FAILED_ATTEMPTS - 1, (verifyResult as PinVerificationResult.Incorrect).remainingAttempts)
+        assertEquals(AuthRepository.MAX_FAILED_ATTEMPTS - 1, authRepository.getRemainingAttempts())
+    }
+
+    @Test
+    fun testVerifyPin_lockoutEnforcedAfterMaxAttempts() {
+        val pin = "593817"
+        authRepository.createPin(pin)
+
+        // Exhaust 5 attempts
         for (i in 1..4) {
-            val result = authRepository.verifyPin("9012", nowMillis = baseTime + i * 100L)
-            assertTrue(result is PinVerificationResult.InvalidPin)
-            val invalid = result as PinVerificationResult.InvalidPin
-            assertEquals(i, invalid.failedAttempts)
-            assertEquals(5 - i, invalid.attemptsRemainingBeforeCooldown)
+            val res = authRepository.verifyPin("00000$i")
+            assertTrue(res is PinVerificationResult.Incorrect)
         }
 
-        // 5th wrong attempt triggers LockedOut for 30 seconds
-        val fifthResult = authRepository.verifyPin("9012", nowMillis = baseTime + 500L)
-        assertTrue(fifthResult is PinVerificationResult.LockedOut)
-        val lockedOut = fifthResult as PinVerificationResult.LockedOut
-        assertTrue(lockedOut.newlyTriggered)
-        assertEquals(30L, lockedOut.remainingSeconds)
+        // 5th failed attempt triggers lockout
+        val fifthAttempt = authRepository.verifyPin("999999")
+        assertTrue("5th failed attempt should trigger lockout", fifthAttempt is PinVerificationResult.LockedOut)
+        assertTrue(authRepository.isLockedOut())
+        assertTrue(authRepository.getLockoutRemainingSeconds() > 0)
 
-        // Valid PIN is rejected while lockout is active
-        val duringLockout = authRepository.verifyPin("6482", nowMillis = baseTime + 5_000L)
-        assertTrue(duringLockout is PinVerificationResult.LockedOut)
-        assertFalse(authRepository.verifyPinBoolean("6482", nowMillis = baseTime + 5_000L))
-
-        // Valid PIN succeeds after cooldown expires and resets failed counter
-        val afterLockout = authRepository.verifyPin("6482", nowMillis = baseTime + 31_000L)
-        assertEquals(PinVerificationResult.Success, afterLockout)
-        assertEquals(0, authRepository.getFailedAttempts())
+        // Subsequent attempt is blocked by lockout
+        val blockedAttempt = authRepository.verifyPin(pin)
+        assertTrue(blockedAttempt is PinVerificationResult.LockedOut)
     }
 
     @Test
-    fun `changePin verifies current PIN before rotating credentials and clearPin removes credentials`() {
-        assertTrue(authRepository.setPin("7391"))
+    fun testClearPin_removesStoredCredentials() {
+        authRepository.createPin("837261")
+        assertTrue(authRepository.isPinConfigured())
 
-        // Wrong current PIN fails rotation
-        val failedChange = authRepository.changePin("5820", "8492", "8492")
-        assertTrue(failedChange is PinSetupResult.ValidationError)
-        assertTrue(authRepository.verifyPinBoolean("7391"))
-
-        // Correct current PIN rotates credentials
-        val successChange = authRepository.changePin("7391", "8492", "8492")
-        assertTrue(successChange is PinSetupResult.Success)
-        assertFalse(authRepository.verifyPinBoolean("7391"))
-        assertTrue(authRepository.verifyPinBoolean("8492"))
-
-        // Clear PIN removes stored salt and hash
         authRepository.clearPin()
         assertFalse(authRepository.isPinConfigured())
-        assertEquals(PinVerificationResult.NotConfigured, authRepository.verifyPin("8492"))
     }
 
     @Test
-    fun `corrupted credential storage is detected and rejected`() {
-        assertTrue(authRepository.setPin("7391"))
-        authRepository.encryptedPrefs.edit()
-            .putString(AuthRepository.KEY_PIN_VERIFIER_B64, "INVALID_CORRUPTED_HASH")
-            .commit()
+    fun testSaltUniqueness_differentSaltsProduceDifferentHashesForSamePin() {
+        val pin = "837261"
 
-        assertTrue(authRepository.hasCorruptedCredentials())
-        assertFalse(authRepository.isPinConfigured())
-        assertEquals(PinVerificationResult.CorruptedStorage, authRepository.verifyPin("7391"))
-    }
+        // First instance creates PIN
+        authRepository.createPin(pin)
+        val prefs = context.getSharedPreferences("zama_auth_security_vault", Context.MODE_PRIVATE)
+        val salt1 = prefs.getString("auth_pin_salt", "")
+        val hash1 = prefs.getString("auth_pin_hash", "")
 
-    @Test
-    fun `biometric capability check queries androidx biometric manager`() {
-        val capability = authRepository.checkBiometricCapability()
-        assertNotNull(capability)
+        // Recreate same PIN -> must have brand new cryptographically random salt and hash
+        authRepository.createPin(pin)
+        val salt2 = prefs.getString("auth_pin_salt", "")
+        val hash2 = prefs.getString("auth_pin_hash", "")
+
+        assertNotEquals(salt1, salt2)
+        assertNotEquals(hash1, hash2)
     }
 }

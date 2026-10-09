@@ -47,6 +47,14 @@ interface WhatsAppChatHistoryDao {
     fun getAllThreads(): Flow<List<WhatsAppChatThreadEntity>>
 
     /**
+     * Retrieves all persisted message threads as a one-shot list for Room JSON export.
+     */
+    @Query(
+        "SELECT * FROM whatsapp_chat_threads ORDER BY is_pinned DESC, last_message_timestamp_millis DESC"
+    )
+    suspend fun getAllThreadsSync(): List<WhatsAppChatThreadEntity>
+
+    /**
      * Observes message threads assigned to a specific autonomous WhatsApp agent.
      */
     @Query(
@@ -191,6 +199,12 @@ interface WhatsAppChatHistoryDao {
     fun getAllMessages(): Flow<List<WhatsAppChatMessageEntity>>
 
     /**
+     * Retrieves the entire chat history across all threads as a one-shot list for Room JSON export.
+     */
+    @Query("SELECT * FROM whatsapp_chat_messages ORDER BY timestamp_millis ASC, id ASC")
+    suspend fun getAllMessagesSync(): List<WhatsAppChatMessageEntity>
+
+    /**
      * Retrieves the latest message in a specific [threadId].
      */
     @Query(
@@ -199,18 +213,55 @@ interface WhatsAppChatHistoryDao {
     suspend fun getLatestMessageForThread(threadId: String): WhatsAppChatMessageEntity?
 
     /**
-     * Searches chat history across all threads by message content, customer name, or agent name.
+     * Searches chat history across all threads by message content, customer name, agent name,
+     * customer phone, or AI reasoning trace.
      */
     @Query(
         """
         SELECT * FROM whatsapp_chat_messages 
         WHERE content LIKE '%' || :query || '%' 
            OR customer_name LIKE '%' || :query || '%' 
+           OR customer_phone LIKE '%' || :query || '%'
            OR agent_name LIKE '%' || :query || '%'
-        ORDER BY timestamp_millis DESC, id DESC
+           OR ai_reasoning_trace LIKE '%' || :query || '%'
+           OR detected_intent LIKE '%' || :query || '%'
+        ORDER BY timestamp_millis ASC, id ASC
         """
     )
     fun searchMessages(query: String): Flow<List<WhatsAppChatMessageEntity>>
+
+    /**
+     * Searches chat history filtered by sender role (user vs WhatsApp agent) and keyword.
+     */
+    @Query(
+        """
+        SELECT * FROM whatsapp_chat_messages 
+        WHERE is_from_user = :isFromUser 
+          AND (content LIKE '%' || :query || '%' OR customer_name LIKE '%' || :query || '%' OR agent_name LIKE '%' || :query || '%' OR ai_reasoning_trace LIKE '%' || :query || '%')
+        ORDER BY timestamp_millis ASC, id ASC
+        """
+    )
+    fun searchMessagesBySender(query: String, isFromUser: Boolean): Flow<List<WhatsAppChatMessageEntity>>
+
+    /**
+     * Searches persisted conversation threads by thread metadata or matching message content.
+     */
+    @Query(
+        """
+        SELECT * FROM whatsapp_chat_threads 
+        WHERE customer_name LIKE '%' || :query || '%' 
+           OR customer_phone LIKE '%' || :query || '%' 
+           OR agent_name LIKE '%' || :query || '%' 
+           OR topic_summary LIKE '%' || :query || '%' 
+           OR last_message_preview LIKE '%' || :query || '%'
+           OR thread_id IN (
+               SELECT DISTINCT thread_id FROM whatsapp_chat_messages 
+               WHERE content LIKE '%' || :query || '%'
+           )
+        ORDER BY is_pinned DESC, last_message_timestamp_millis DESC
+        """
+    )
+    fun searchThreads(query: String): Flow<List<WhatsAppChatThreadEntity>>
 
     /**
      * Searches chat history within a single [threadId] by message content.
@@ -274,6 +325,15 @@ interface WhatsAppChatHistoryDao {
         "SELECT * FROM whatsapp_chat_threads ORDER BY is_pinned DESC, last_message_timestamp_millis DESC"
     )
     fun observeAllThreadsWithMessages(): Flow<List<WhatsAppThreadWithMessages>>
+
+    /**
+     * Retrieves all message threads together with their complete message lists as a one-shot list for JSON backup.
+     */
+    @Transaction
+    @Query(
+        "SELECT * FROM whatsapp_chat_threads ORDER BY is_pinned DESC, last_message_timestamp_millis DESC"
+    )
+    suspend fun getAllThreadsWithMessagesSync(): List<WhatsAppThreadWithMessages>
 
     /**
      * Observes all message threads and their messages for a specific [agentId].
